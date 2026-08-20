@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.2
+
+### Patch Changes
+
+- 20afea4: Add the `pullfrog.yml` workflow to mirror the sibling `pi-provider-poolside` setup.
+
 ## 0.0.1
 
 - Initial release: Pi provider for OpenCode Console via OAuth 2.0 device authorization grant.

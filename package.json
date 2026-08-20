@@ -1,6 +1,6 @@
 {
   "name": "pi-provider-opencode-console",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Pi provider for OpenCode Console via device-auth login and live model discovery",
   "type": "module",
   "license": "MIT",
