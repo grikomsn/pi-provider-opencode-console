@@ -145,12 +145,14 @@ export default function (pi: ExtensionAPI): void {
 			// synchronously. Session load + refresh happens inside the
 			// returned stream, mirroring
 			// `examples/extensions/custom-provider-gitlab-duo/index.ts`.
-			return streamConsoleWithSession(model, context, async () => {
+			return streamConsoleWithSession(model, context, async ({ force } = {}) => {
 				const session = await loadSession();
 				if (!session) {
 					throw new Error("Not signed in to OpenCode Console; run /login opencode-console");
 				}
-				const fresh = await ensureFreshSession(session);
+				// `force` is set when the server answered 401 mid-stream: refresh
+				// the access token even if it has not reached its expiry clock.
+				const fresh = await ensureFreshSession(session, force === true);
 				return {
 					accessToken: fresh.accessToken,
 					orgId: fresh.orgId,

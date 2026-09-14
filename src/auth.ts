@@ -345,6 +345,15 @@ export async function loadSession(): Promise<ConsoleSession | undefined> {
 	const entry = auth[PROVIDER_ID];
 	if (!entry || entry.type !== "oauth") return undefined;
 	const env = entry.env ?? {};
+	let orgs: ConsoleOrg[] = [];
+	const rawOrgs = env.OPENCODE_CONSOLE_ORGS;
+	if (rawOrgs) {
+		try {
+			orgs = normalizeOrgs(JSON.parse(rawOrgs));
+		} catch {
+			orgs = [];
+		}
+	}
 	return {
 		server: env.OPENCODE_CONSOLE_SERVER ?? DEFAULT_CONSOLE_SERVER,
 		accessToken: entry.access,
@@ -352,7 +361,7 @@ export async function loadSession(): Promise<ConsoleSession | undefined> {
 		expiresAt: entry.expires,
 		accountId: env.OPENCODE_CONSOLE_ACCOUNT_ID ?? "",
 		email: env.OPENCODE_CONSOLE_EMAIL ?? "",
-		orgs: [],
+		orgs,
 		...(env.OPENCODE_CONSOLE_ORG_ID ? { orgId: env.OPENCODE_CONSOLE_ORG_ID } : {}),
 		...(env.OPENCODE_CONSOLE_ORG_NAME ? { orgName: env.OPENCODE_CONSOLE_ORG_NAME } : {}),
 	};
@@ -375,9 +384,11 @@ export function envForSession(
 	};
 	if (session.orgId) env.OPENCODE_CONSOLE_ORG_ID = session.orgId;
 	if (session.orgName) env.OPENCODE_CONSOLE_ORG_NAME = session.orgName;
-	if (fetchedOrgs && fetchedOrgs.length) {
-		env.OPENCODE_CONSOLE_ORG_COUNT = String(fetchedOrgs.length);
-	}
+	// Persist the org list so `/opencode-console switch-org` survives a
+	// restart; `fetchedOrgs` (freshly fetched) takes precedence over the
+	// session's carried-over list.
+	const orgs = fetchedOrgs && fetchedOrgs.length ? fetchedOrgs : session.orgs;
+	if (orgs.length) env.OPENCODE_CONSOLE_ORGS = JSON.stringify(orgs);
 	return env;
 }
 

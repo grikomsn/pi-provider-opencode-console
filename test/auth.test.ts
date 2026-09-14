@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	requestDeviceCode,
 	completeDeviceSignIn,
@@ -7,7 +10,11 @@ import {
 	ensureFreshSession,
 	resolveConsoleVerificationUrl,
 	isPublicConsoleServer,
+	loadSession,
+	saveSession,
+	envForSession,
 	DEFAULT_CONSOLE_SERVER,
+	PROVIDER_ID,
 } from "../src/auth.ts";
 
 const SERVER = "https://console.example.test";
@@ -262,4 +269,55 @@ test("ensureFreshSession short-circuits when still fresh", async () => {
 	const session = await ensureFreshSession(fresh, false, fetcher);
 	assert.equal(session.accessToken, "still-valid");
 	assert.equal(calls, 0);
+});
+
+test("saveSession persists the org list and loadSession restores it", async () => {
+	const { mkdtemp, rm } = await import("node:fs/promises");
+	const { tmpdir } = await import("node:os");
+	const fakeHome = await mkdtemp(join(tmpdir(), "pi-provider-auth-"));
+	const prevHome = process.env.HOME;
+	process.env.HOME = fakeHome;
+	try {
+		const orgs = [
+			{ id: "org-b", name: "Beta" },
+			{ id: "org-a", name: "Alpha" },
+		];
+		const sortedOrgs = [...orgs].sort((a, b) => a.name.localeCompare(b.name));
+		await saveSession(
+			{
+				server: DEFAULT_CONSOLE_SERVER,
+				accessToken: "at",
+				refreshToken: "rt",
+				expiresAt: Date.now() + 60 * 60_000,
+				accountId: "acct",
+				email: "u@example.test",
+				orgs: [],
+				orgId: "org-a",
+				orgName: "Alpha",
+			},
+			orgs,
+		);
+		const loaded = await loadSession();
+		assert.ok(loaded);
+		assert.deepEqual(loaded.orgs, sortedOrgs);
+		assert.equal(loaded.orgId, "org-a");
+		assert.equal(loaded.orgName, "Alpha");
+
+		// envForSession without fetchedOrgs keeps the carried-over org list.
+		const env = envForSession(loaded);
+		assert.equal(env.OPENCODE_CONSOLE_ORGS, JSON.stringify(sortedOrgs));
+
+		// Corrupt org JSON degrades to an empty list, not a crash.
+		const authPath = join(fakeHome, ".pi", "agent", "auth.json");
+		const authRaw = await readFile(authPath, "utf8");
+		const auth = JSON.parse(authRaw) as Record<string, { env: Record<string, string> }>;
+		auth[PROVIDER_ID]!.env!.OPENCODE_CONSOLE_ORGS = "{not json";
+		await writeFile(authPath, JSON.stringify(auth));
+		const degraded = await loadSession();
+		assert.ok(degraded);
+		assert.deepEqual(degraded.orgs, []);
+	} finally {
+		process.env.HOME = prevHome;
+		await rm(fakeHome, { recursive: true, force: true });
+	}
 });

@@ -201,3 +201,144 @@ test("streamConsole routes google-generative-ai URLs correctly", async () => {
 		},
 	);
 });
+
+test("streamConsole retries a transient 503 and succeeds", async () => {
+	const captured: CapturedRequest[] = [];
+	let calls = 0;
+	await withFakeServer(
+		(req) => {
+			captured.push(req);
+			calls++;
+			if (calls === 1) return { status: 503, body: "upstream unavailable", contentType: "application/json" };
+			return { body: makeOpenAiCompletionsSSE("recovered") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" });
+			let done = false;
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+				if (event.type === "done") done = true;
+			}
+			assert.equal(done, true);
+			assert.equal(calls, 2, "expected one retry after the 503");
+			assert.equal(captured.length, 2);
+		},
+	);
+});
+
+test("streamConsole force-refreshes once on 401 via refreshSession", async () => {
+	const captured: CapturedRequest[] = [];
+	let calls = 0;
+	let refreshes = 0;
+	await withFakeServer(
+		(req) => {
+			captured.push(req);
+			calls++;
+			if (calls === 1) return { status: 401, body: "unauthorized", contentType: "application/json" };
+			return { body: makeOpenAiCompletionsSSE("fresh") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), {
+				accessToken: "stale-token",
+				orgId: "org-1",
+				refreshSession: async () => {
+					refreshes++;
+					return { accessToken: "fresh-token", orgId: "org-1", requestId: "req-2" };
+				},
+			});
+			let done = false;
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+				if (event.type === "done") done = true;
+			}
+			assert.equal(done, true);
+			assert.equal(refreshes, 1);
+			assert.equal(calls, 2);
+			assert.equal(captured[0]!.headers["authorization"], "Bearer stale-token");
+			assert.equal(captured[1]!.headers["authorization"], "Bearer fresh-token");
+		},
+	);
+});
+
+test("streamConsole emits an error event when 401 persists after refresh", async () => {
+	let calls = 0;
+	let refreshes = 0;
+	await withFakeServer(
+		() => {
+			calls++;
+			return { status: 401, body: "unauthorized", contentType: "application/json" };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), {
+				accessToken: "stale",
+				refreshSession: async () => {
+					refreshes++;
+					return { accessToken: "also-stale" };
+				},
+			});
+			let sawError = false;
+			for await (const event of stream) {
+				if (event.type === "error") sawError = true;
+			}
+			assert.equal(sawError, true, "expected a terminal error event");
+			assert.equal(refreshes, 1, "expected exactly one refresh attempt");
+			assert.equal(calls, 2);
+		},
+	);
+});
+
+test("streamConsole drops a rejected temperature on 400 and retries", async () => {
+	const captured: CapturedRequest[] = [];
+	let calls = 0;
+	await withFakeServer(
+		(req) => {
+			captured.push(req);
+			calls++;
+			if (calls === 1) {
+				return {
+					status: 400,
+					body: JSON.stringify({ error: { message: "temperature is unsupported for this model" } }),
+					contentType: "application/json",
+				};
+			}
+			return { body: makeOpenAiCompletionsSSE("patched") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" }, { temperature: 0.7 });
+			let done = false;
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+				if (event.type === "done") done = true;
+			}
+			assert.equal(done, true);
+			assert.equal(calls, 2);
+			assert.deepEqual(JSON.parse(captured[0]!.body).temperature, 0.7);
+			assert.equal(JSON.parse(captured[1]!.body).temperature, undefined);
+		},
+	);
+});
+
+test("streamConsole does not retry after content has been forwarded", async () => {
+	let calls = 0;
+	await withFakeServer(
+		() => {
+			calls++;
+			// Truncated SSE: content arrives, then the connection body ends
+			// without [DONE]; pi-ai treats that as an error stop reason.
+			if (calls === 1) return { body: makeOpenAiCompletionsSSE("partial") };
+			return { body: makeOpenAiCompletionsSSE("never") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" });
+			for await (const _event of stream) {
+				/* drain */
+			}
+			assert.equal(calls, 1, "must not re-issue a request after forwarding events");
+		},
+	);
+});
