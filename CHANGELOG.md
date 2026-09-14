@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0
+
+### Minor Changes
+
+- 3175e6d: Match sibling-bridge streaming resilience: retry transient network/server failures with backoff, force-refresh the session once on 401 mid-stream, and drop rejected request options (`temperature`, reasoning/thinking) on retryable 400s. Also persist the org list across restarts so `/opencode-console switch-org` works without re-signing in.
+
+### Patch Changes
+
+- 20afea4: Add the `pullfrog.yml` workflow to mirror the sibling `pi-provider-poolside` setup.
+- f06f76b: Open Console device sign-in at `https://opencode.ai/console/device` instead of doubling the `/console` path.
+
 ## 0.0.1
 
 - Initial release: Pi provider for OpenCode Console via OAuth 2.0 device authorization grant.
