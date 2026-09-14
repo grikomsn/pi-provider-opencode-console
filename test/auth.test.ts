@@ -5,9 +5,52 @@ import {
 	completeDeviceSignIn,
 	refreshSession,
 	ensureFreshSession,
+	resolveConsoleVerificationUrl,
+	isPublicConsoleServer,
+	DEFAULT_CONSOLE_SERVER,
 } from "../src/auth.ts";
 
 const SERVER = "https://console.example.test";
+const COMPLETE = "/console/device?user_code=ABCD-EFGH&client_id=opencode-cli";
+const EXPECTED = "https://opencode.ai/console/device?user_code=ABCD-EFGH&client_id=opencode-cli";
+
+test("resolves Console device verification URLs onto the /console subpath", () => {
+	assert.equal(resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, COMPLETE), EXPECTED);
+	assert.equal(resolveConsoleVerificationUrl("https://opencode.ai/console/", COMPLETE), EXPECTED);
+	assert.equal(
+		resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, "device?user_code=ABCD-EFGH"),
+		"https://opencode.ai/console/device?user_code=ABCD-EFGH",
+	);
+	assert.equal(resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, EXPECTED), EXPECTED);
+});
+
+test("rewrites console.opencode.ai device pages onto opencode.ai/console", () => {
+	assert.equal(resolveConsoleVerificationUrl("https://console.opencode.ai", COMPLETE), EXPECTED);
+	assert.equal(resolveConsoleVerificationUrl("https://console.opencode.ai/", COMPLETE), EXPECTED);
+	assert.equal(
+		resolveConsoleVerificationUrl("https://console.opencode.ai", "/device?user_code=ABCD-EFGH"),
+		"https://opencode.ai/console/device?user_code=ABCD-EFGH",
+	);
+	assert.equal(
+		resolveConsoleVerificationUrl(
+			DEFAULT_CONSOLE_SERVER,
+			"https://console.opencode.ai/console/device?user_code=ABCD-EFGH",
+		),
+		"https://opencode.ai/console/device?user_code=ABCD-EFGH",
+	);
+});
+
+test("rejects non-HTTP Console verification URLs", () => {
+	assert.throws(() => resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, "javascript:alert(1)"), /non-HTTP/);
+	assert.throws(() => resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, "http://["), /invalid verification URL/);
+});
+
+test("isPublicConsoleServer treats both public hosts as default", () => {
+	assert.equal(isPublicConsoleServer(DEFAULT_CONSOLE_SERVER), true);
+	assert.equal(isPublicConsoleServer("https://console.opencode.ai"), true);
+	assert.equal(isPublicConsoleServer("https://console.opencode.ai/"), true);
+	assert.equal(isPublicConsoleServer(SERVER), false);
+});
 
 test("requestDeviceCode parses response", async () => {
 	const fetcher: typeof fetch = async () =>
@@ -24,9 +67,50 @@ test("requestDeviceCode parses response", async () => {
 	const dc = await requestDeviceCode(SERVER, fetcher);
 	assert.equal(dc.deviceCode, "dev-123");
 	assert.equal(dc.userCode, "ABCD-1234");
+	assert.equal(dc.verificationUrl, "https://console.example.test/activate?code=ABCD-1234");
 	assert.equal(dc.server, SERVER);
 	assert.ok(dc.expiresAt > Date.now() + 599_000);
 	assert.equal(dc.intervalMs, 5000);
+});
+
+test("requestDeviceCode opens verification at opencode.ai/console/device", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		assert.equal(String(input), "https://opencode.ai/console/auth/device/code");
+		return new Response(
+			JSON.stringify({
+				device_code: "device",
+				user_code: "ABCD-EFGH",
+				verification_uri: "/console/device",
+				verification_uri_complete: COMPLETE,
+				expires_in: 900,
+				interval: 5,
+			}),
+			{ status: 200 },
+		);
+	};
+	const dc = await requestDeviceCode(DEFAULT_CONSOLE_SERVER, fetcher);
+	assert.equal(dc.verificationUrl, EXPECTED);
+	assert.equal(dc.server, DEFAULT_CONSOLE_SERVER);
+	assert.equal(dc.userCode, "ABCD-EFGH");
+});
+
+test("requestDeviceCode rewrites console.opencode.ai device pages but keeps the API server", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		assert.equal(String(input), "https://console.opencode.ai/auth/device/code");
+		return new Response(
+			JSON.stringify({
+				device_code: "device",
+				user_code: "WXYZ-UVST",
+				verification_uri_complete: "/console/device?user_code=WXYZ-UVST",
+				expires_in: 900,
+				interval: 5,
+			}),
+			{ status: 200 },
+		);
+	};
+	const dc = await requestDeviceCode("https://console.opencode.ai", fetcher);
+	assert.equal(dc.verificationUrl, "https://opencode.ai/console/device?user_code=WXYZ-UVST");
+	assert.equal(dc.server, "https://console.opencode.ai");
 });
 
 test("requestDeviceCode throws on incomplete response", async () => {

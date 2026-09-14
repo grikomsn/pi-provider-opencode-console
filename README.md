@@ -8,7 +8,7 @@
 [![CI](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml/badge.svg)](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode Console](https://console.opencode.ai) that signs in via the OAuth 2.0 device authorization grant and discovers account-specific models from the org-scoped `/api/config` endpoint.
+A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode Console](https://opencode.ai/console) that signs in via the OAuth 2.0 device authorization grant and discovers account-specific models from the org-scoped `/api/config` endpoint.
 
 ## Features
 
@@ -62,7 +62,7 @@ OAuth credentials live in `~/.pi/agent/auth.json` (managed by Pi; `/logout openc
 
 | Env var | Default | Notes |
 | --- | --- | --- |
-| `OPENCODE_CONSOLE_SERVER` | `https://console.opencode.ai` | Override for self-hosted consoles. Persisted to `auth.json` on first sign-in. |
+| `OPENCODE_CONSOLE_SERVER` | `https://opencode.ai/console` | Override for self-hosted consoles. Persisted to `auth.json` on first sign-in. |
 
 ## Why a separate provider?
 

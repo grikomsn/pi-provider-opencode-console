@@ -7,10 +7,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import {
 	deleteSession,
 	ensureFreshSession,
+	isPublicConsoleServer,
 	loadSession,
 	listSessionOrgs,
 	saveSession,
-	DEFAULT_CONSOLE_SERVER,
 } from "./auth.ts";
 import { buildPiModels, loadConsoleConfig } from "./models.ts";
 import type { ConsoleSession } from "./auth.ts";
@@ -108,10 +108,9 @@ async function refreshModels(ctx: ExtensionCommandContext, session: ConsoleSessi
 async function showStatus(ctx: ExtensionCommandContext, session: ConsoleSession): Promise<void> {
 	const expiresIn = Math.max(0, Math.round((session.expiresAt - Date.now()) / 1000));
 	const expiresInMin = Math.round(expiresIn / 60);
-	const serverLabel =
-		session.server === DEFAULT_CONSOLE_SERVER
-			? session.server
-			: `${session.server} (custom)`;
+	const serverLabel = isPublicConsoleServer(session.server)
+		? session.server
+		: `${session.server} (custom)`;
 	const lines = [
 		"OpenCode Console status",
 		`  Server: ${serverLabel}`,

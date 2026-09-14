@@ -11,7 +11,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const DEFAULT_CONSOLE_SERVER = "https://console.opencode.ai";
+// Public Console is served at https://opencode.ai/console. The console.opencode.ai
+// alias 302-prefixes /console, so using it as a browser origin doubles that path.
+export const DEFAULT_CONSOLE_SERVER = "https://opencode.ai/console";
+export const CONSOLE_ALIAS_HOST = "console.opencode.ai";
 export const OPENCODE_CLIENT_ID = "opencode-cli";
 export const OPENCODE_CLIENT = "pi-provider-opencode-console";
 export const PROVIDER_ID = "opencode-console";
@@ -129,6 +132,39 @@ function stripTrailingSlash(server: string): string {
 	return server.replace(/\/+$/, "");
 }
 
+export function isPublicConsoleServer(server: string): boolean {
+	const normalized = stripTrailingSlash(server);
+	return normalized === DEFAULT_CONSOLE_SERVER || normalized === `https://${CONSOLE_ALIAS_HOST}`;
+}
+
+/**
+ * Resolve `verification_uri_complete` against the Console API base.
+ * The live API returns an origin-absolute `/console/device?...` path; string
+ * concatenation onto either public host doubles `/console`.
+ */
+export function resolveConsoleVerificationUrl(server: string, verification: string): string {
+	let url: URL;
+	try {
+		url = new URL(verification, `${stripTrailingSlash(server)}/`);
+	} catch {
+		throw new Error("OpenCode Console returned an invalid verification URL");
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error("OpenCode Console returned a non-HTTP verification URL");
+	}
+	return canonicalizePublicConsoleUrl(url).href;
+}
+
+function canonicalizePublicConsoleUrl(url: URL): URL {
+	if (url.hostname !== CONSOLE_ALIAS_HOST) return url;
+	const next = new URL(url.href);
+	next.hostname = "opencode.ai";
+	if (next.pathname !== "/console" && !next.pathname.startsWith("/console/")) {
+		next.pathname = `/console${next.pathname.startsWith("/") ? next.pathname : `/${next.pathname}`}`;
+	}
+	return next;
+}
+
 export async function requestDeviceCode(
 	server: string = DEFAULT_CONSOLE_SERVER,
 	fetcher: typeof fetch = fetch,
@@ -154,7 +190,7 @@ export async function requestDeviceCode(
 	return {
 		deviceCode,
 		userCode,
-		verificationUrl: verification.startsWith("http") ? verification : `${normalized}${verification}`,
+		verificationUrl: resolveConsoleVerificationUrl(normalized, verification),
 		expiresAt: Date.now() + expiresIn * 1000,
 		intervalMs: interval * 1000,
 		server: normalized,
