@@ -5,11 +5,12 @@ import type { AddressInfo } from "node:net";
 import {
 	type Api,
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	type Context,
 	type Model,
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
-import { streamConsole } from "../src/stream.ts";
+import { streamConsole, streamConsoleWithSession } from "../src/stream.ts";
 
 interface CapturedRequest {
 	method?: string;
@@ -89,6 +90,104 @@ function makeContext(prompt: string): Context {
 		messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
 	};
 }
+
+// Regression for #5: the session-aware wrapper must resolve credentials before delegation.
+test("streamConsoleWithSession resolves the initial session before requesting", async () => {
+	const captured: CapturedRequest[] = [];
+	let sessionCalls = 0;
+	await withFakeServer(
+		(req) => {
+			captured.push(req);
+			return { body: makeOpenAiCompletionsSSE("hi") };
+		},
+		async (baseUrl) => {
+			const stream = streamConsoleWithSession(makeModel(`${baseUrl}/v1`), makeContext("hi"), async (opts) => {
+				sessionCalls++;
+				assert.equal(opts?.force, undefined);
+				return { accessToken: "session-token", orgId: "session-org", requestId: "session-request" };
+			}, { apiKey: "options-token" });
+			assert.equal(typeof stream[Symbol.asyncIterator], "function", "must return a stream synchronously");
+			const events: AssistantMessageEvent[] = [];
+			for await (const event of stream) events.push(event);
+			assert.equal(sessionCalls, 1);
+			assert.equal(events[0]?.type, "start");
+			assert.equal(events.at(-1)?.type, "done");
+			assert.equal(events.filter((event) => event.type === "done" || event.type === "error").length, 1);
+			assert.equal((await stream.result()).stopReason, "stop");
+			assert.equal(captured.length, 1);
+			assert.equal(captured[0]!.headers["authorization"], "Bearer session-token");
+			assert.equal(captured[0]!.headers["x-opencode-org-id"], "session-org");
+			assert.equal(captured[0]!.headers["x-opencode-request"], "session-request");
+		},
+	);
+});
+
+test("streamConsoleWithSession force-refreshes the resolved session once on 401", async () => {
+	const captured: CapturedRequest[] = [];
+	const forces: (boolean | undefined)[] = [];
+	await withFakeServer(
+		(req) => {
+			captured.push(req);
+			if (captured.length === 1) return { status: 401, body: "unauthorized", contentType: "application/json" };
+			return { body: makeOpenAiCompletionsSSE("fresh") };
+		},
+		async (baseUrl) => {
+			const stream = streamConsoleWithSession(makeModel(`${baseUrl}/v1`), makeContext("hi"), async (opts) => {
+				forces.push(opts?.force);
+				return { accessToken: opts?.force ? "fresh-token" : "stale-token", orgId: "org-1" };
+			});
+			for await (const _event of stream) { /* drain */ }
+			assert.equal((await stream.result()).stopReason, "stop");
+			assert.deepEqual(forces, [undefined, true]);
+			assert.equal(captured.length, 2);
+			assert.equal(captured[0]!.headers["authorization"], "Bearer stale-token");
+			assert.equal(captured[1]!.headers["authorization"], "Bearer fresh-token");
+		},
+	);
+});
+
+test("streamConsoleWithSession turns session resolution failures into a terminal error", async () => {
+	let requests = 0;
+	await withFakeServer(
+		() => { requests++; return { body: makeOpenAiCompletionsSSE("unexpected") }; },
+		async (baseUrl) => {
+			const stream = streamConsoleWithSession(makeModel(`${baseUrl}/v1`), makeContext("hi"), async () => {
+				throw new Error("Session missing");
+			});
+			const events: AssistantMessageEvent[] = [];
+			for await (const event of stream) events.push(event);
+			assert.equal(events.length, 1);
+			assert.equal(events[0]?.type, "error");
+			const result = await stream.result();
+			assert.equal(result.stopReason, "error");
+			assert.equal(result.errorMessage, "Session missing");
+			assert.equal(requests, 0);
+		},
+	);
+});
+
+test("streamConsoleWithSession aborts without requesting when cancelled during session resolution", async () => {
+	let requests = 0;
+	await withFakeServer(
+		() => { requests++; return { body: makeOpenAiCompletionsSSE("unexpected") }; },
+		async (baseUrl) => {
+			const controller = new AbortController();
+			let sessionCalls = 0;
+			const stream = streamConsoleWithSession(makeModel(`${baseUrl}/v1`), makeContext("hi"), async () => {
+				sessionCalls++;
+				controller.abort();
+				return { accessToken: "session-token" };
+			}, { signal: controller.signal });
+			const events: AssistantMessageEvent[] = [];
+			for await (const event of stream) events.push(event);
+			assert.equal(sessionCalls, 1);
+			assert.equal(events.length, 1);
+			assert.equal(events[0]?.type, "error");
+			assert.equal((await stream.result()).stopReason, "aborted");
+			assert.equal(requests, 0);
+		},
+	);
+});
 
 test("streamConsole injects bearer auth + x-opencode-org-id + x-opencode-client", async () => {
 	const captured: CapturedRequest[] = [];

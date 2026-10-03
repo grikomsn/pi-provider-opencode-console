@@ -268,8 +268,9 @@ export function streamConsole(
 
 /**
  * Same as `streamConsole` but resolves the access token + orgId lazily via
- * `getSession`, which is invoked with `{ force: true }` when the server
- * answers 401 so the session can force-refresh its access token.
+ * `getSession` before the first request. It is invoked again with
+ * `{ force: true }` when the server answers 401 so the session can
+ * force-refresh its access token.
  * Used by the `streamSimple` handler so that session loading happens inside
  * the returned stream's async loop (preserving the synchronous-return
  * contract).
@@ -280,8 +281,26 @@ export function streamConsoleWithSession(
 	getSession: (opts?: { force?: boolean }) => Promise<StreamContext>,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	return streamConsole(model, context, {
-		accessToken: "",
-		refreshSession: async () => getSession({ force: true }),
-	}, options);
+	const stream = createAssistantMessageEventStream();
+	(async () => {
+		try {
+			options?.signal?.throwIfAborted();
+			const session = await getSession();
+			options?.signal?.throwIfAborted();
+			const inner = streamConsole(model, context, {
+				...session,
+				refreshSession: async () => getSession({ force: true }),
+			}, options);
+			for await (const event of inner) {
+				stream.push(event);
+			}
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			const reason: "error" | "aborted" = options?.signal?.aborted ? "aborted" : "error";
+			stream.push(buildErrorEvent(model, reason, errorMessage));
+		} finally {
+			stream.end();
+		}
+	})();
+	return stream;
 }
