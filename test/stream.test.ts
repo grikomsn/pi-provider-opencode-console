@@ -434,3 +434,52 @@ test("streamConsole sends wireId instead of a disambiguated model id", async () 
 		},
 	);
 });
+
+test("streamConsole derives a deterministic session id when options.sessionId is absent", async () => {
+	const sessions: string[] = [];
+	await withFakeServer(
+		(req) => {
+			sessions.push(req.headers["x-opencode-session"]);
+			return { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			for (let i = 0; i < 2; i++) {
+				const stream = streamConsole(model, makeContext("hi there"), { accessToken: "tok" });
+				for await (const event of stream) {
+					if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+				}
+			}
+		},
+	);
+	// Same transcript → same derived id on both requests; id is prefixed and hex-shaped.
+	assert.equal(sessions[0], sessions[1]);
+	assert.match(sessions[0]!, /^pi-[0-9a-f]{8}$/);
+	assert.notEqual(sessions[0], undefined);
+});
+
+test("a different transcript derives a different session id, and an explicit options.sessionId still wins", async () => {
+	const sessions: string[] = [];
+	const explicit = "explicit-session";
+	await withFakeServer(
+		(req) => {
+			sessions.push(req.headers["x-opencode-session"]);
+			return { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			for (const prompt of ["first prompt", "second, different prompt"]) {
+				const stream = streamConsole(model, makeContext(prompt), { accessToken: "tok" });
+				for await (const event of stream) {
+					if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+				}
+			}
+			const stream = streamConsole(model, makeContext("first prompt"), { accessToken: "tok" }, { sessionId: explicit });
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+			}
+		},
+	);
+	assert.notEqual(sessions[0], sessions[1]); // different prompts → different ids
+	assert.equal(sessions[2], explicit); // explicit caller id wins over derived
+});
