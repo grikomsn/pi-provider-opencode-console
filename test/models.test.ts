@@ -149,6 +149,8 @@ test("buildPiModels disambiguates duplicate raw ids across providers", () => {
 	const models = buildPiModels(map);
 	const ids = models.map((m) => m.id).sort();
 	assert.deepEqual(ids, ["anthropic/shared", "openai/shared"]);
+	// The disambiguated pi id changes, but the upstream wire id must not.
+	assert.deepEqual(models.map((m) => m.wireId).sort(), ["shared", "shared"]);
 });
 
 test("buildPiModels skips models without baseUrl", () => {
@@ -182,6 +184,7 @@ test("toProviderModelConfigs maps all required fields", () => {
 		assert.ok(typeof c.reasoning === "boolean");
 		assert.ok(Array.isArray(c.input));
 		assert.ok(typeof c.cost === "object");
+		assert.ok(typeof (c as { wireId?: unknown }).wireId === "string");
 	}
 });
 

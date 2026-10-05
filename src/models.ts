@@ -102,6 +102,8 @@ export async function loadConsoleConfig(
 
 export interface BuiltModel {
 	id: string;
+	/** Raw upstream model id, before duplicate disambiguation. */
+	wireId: string;
 	name: string;
 	provider: string;
 	api: ApiKind;
@@ -448,6 +450,7 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 			const thinkingLevelMap = deriveThinkingLevelMap(source.reasoning_options);
 			entries.push({
 				id: rawId,
+				wireId: rawId,
 				name: typeof source.name === "string" ? source.name : rawId,
 				provider: providerId,
 				api,
@@ -515,7 +518,11 @@ export function toProviderModelConfigs(entries: BuiltModel[]): ProviderModelConf
 		reasoning: m.reasoning,
 		input: m.input,
 		cost: m.cost,
+		// `wireId` is not part of pi's ProviderModelConfig type, but the runtime
+		// preserves unknown fields on extension models, so it reaches
+		// `streamConsole` where it replaces the disambiguated id on the wire.
+		wireId: m.wireId,
 		...(m.headers ? { headers: m.headers } : {}),
 		...(m.thinkingLevelMap ? { thinkingLevelMap: m.thinkingLevelMap } : {}),
-	}));
+	})) as unknown as ProviderModelConfig[];
 }
