@@ -35,6 +35,7 @@ import { baseUrlFor, routeFor, type ApiKind } from "./endpoint.ts";
 import {
 	isTransientNetworkError,
 	isTransientServerError,
+	parseContextOverflow400,
 	patchableOptionFrom400,
 	retryDelayMs,
 	statusFromErrorMessage,
@@ -235,7 +236,9 @@ export function streamConsole(
 				// `/api/config` uses `x-org-id` instead, but that's only called
 				// from `loadConsoleConfig`, which is outside this code path.
 				if (ctx.orgId) headers["x-opencode-org-id"] = ctx.orgId;
-				if (ctx.requestId) headers["x-opencode-request"] = ctx.requestId;
+				// Fresh per-request tracing id (sibling parity: one per attempt,
+				// including retries), independent of session state.
+				headers["x-opencode-request"] = crypto.randomUUID();
 
 				// The auth token: the loaded session/key context wins, falling
 				// back to the runtime-resolved `options.apiKey` (pi's auth
@@ -286,6 +289,8 @@ export function streamConsole(
 					continue;
 				}
 				// 400 naming a rejected option: drop it from the request and retry.
+				// 400 reporting context overflow: shrink the completion budget and
+				// retry (pi's token estimates are heuristic and can undercount).
 				if (status === 400 && forwarded === 0 && patchRetries < MAX_PATCH_RETRIES && errorMessage) {
 					const field = patchableOptionFrom400(errorMessage);
 					if (field && currentOptions?.[field] !== undefined) {
@@ -294,6 +299,15 @@ export function streamConsole(
 						currentOptions = next;
 						patchRetries++;
 						continue;
+					}
+					const overflow = parseContextOverflow400(errorMessage);
+					if (overflow) {
+						const current = currentOptions?.maxTokens ?? model.maxTokens;
+						if (current > 0 && overflow.nextMaxTokens < current) {
+							currentOptions = { ...currentOptions, maxTokens: overflow.nextMaxTokens };
+							patchRetries++;
+							continue;
+						}
 					}
 				}
 				// Transient gateway/server failure: back off and retry.

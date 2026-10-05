@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
 	isTransientNetworkError,
 	isTransientServerError,
+	parseContextOverflow400,
 	patchableOptionFrom400,
 	retryDelayMs,
 	statusFromErrorMessage,
@@ -58,4 +59,20 @@ test("patchableOptionFrom400 maps rejected request fields to stream options", ()
 	assert.equal(patchableOptionFrom400("budget_tokens invalid: must be positive"), "thinkingBudgets");
 	assert.equal(patchableOptionFrom400("max_tokens is too large"), undefined);
 	assert.equal(patchableOptionFrom400("invalid request: missing model"), undefined);
+});
+test("isTransientServerError matches the gateway's bare Internal server error", () => {
+	assert.equal(isTransientServerError(500, "gateway (500): Internal server error."), true);
+	assert.equal(isTransientServerError(500, ": Internal server error"), true);
+	assert.equal(isTransientServerError(500, "some other 500 failure"), false);
+});
+
+test("parseContextOverflow400 computes a reduced completion budget (sibling formula)", () => {
+	const message =
+		"This model's maximum context length is 262,144 tokens, however you requested 300,000 tokens (168,928 in the messages, 131,072 in the completion). Please reduce the length of the messages or completion.";
+	// requested - context = 37,856; reserve = max(256, ceil(262144 * 0.001)) = 263;
+	// next = 131,072 - 37,856 - 263 = 92,953.
+	assert.deepEqual(parseContextOverflow400(message), { nextMaxTokens: 92_953 });
+	assert.equal(parseContextOverflow400("This model's maximum context length is 131072 tokens, however you requested 131200 tokens (131072 in the messages, 128 in the completion)."), undefined);
+	assert.equal(parseContextOverflow400("maximum context length is 300000 tokens, however you requested 131200 tokens (131 in the messages, 64 in the completion)"), undefined);
+	assert.equal(parseContextOverflow400("temperature is unsupported"), undefined);
 });

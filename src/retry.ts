@@ -29,7 +29,9 @@ export function isTransientServerError(status: number, detail: string): boolean 
 		status === 502 ||
 		status === 503 ||
 		status === 504 ||
-		(status === 500 && /Router[._-]?Unavailable/i.test(detail))
+		(status === 500 &&
+			(/Router[._-]?Unavailable/i.test(detail) ||
+				/(?:^|:\s|\b\d{3}\b\s*)Internal server error\.?\s*$/i.test(detail)))
 	);
 }
 
@@ -72,4 +74,32 @@ export function patchableOptionFrom400(message: string): PatchableOption | undef
 		if (hit.test(message)) return option;
 	}
 	return undefined;
+}
+
+const CONTEXT_OVERFLOW_RE = /maximum context length is\s*([\d,]+)\s*tokens?/i;
+const REQUESTED_TOKENS_RE = /you requested\s*([\d,]+)\s*tokens?/i;
+const COMPLETION_TOKENS_RE = /([\d,]+)\s+in the (?:completion|output)/i;
+
+/**
+ * Detect the gateway's context-overflow 400 ("maximum context length is X
+ * tokens ... you requested Y tokens ... Z in the completion") and compute a
+ * reduced max-token budget for the retry, mirroring the sibling's patching
+ * (pi's token estimates are heuristic and can undercount long transcripts).
+ */
+export function parseContextOverflow400(message: string): { nextMaxTokens: number } | undefined {
+	const context = tokenCount(CONTEXT_OVERFLOW_RE.exec(message)?.[1]);
+	const requested = tokenCount(REQUESTED_TOKENS_RE.exec(message)?.[1]);
+	if (!context || !requested || requested <= context) return undefined;
+	const reportedOutput = tokenCount(COMPLETION_TOKENS_RE.exec(message)?.[1]);
+	if (!reportedOutput || reportedOutput <= requested - context) return undefined;
+	const reserve = Math.max(256, Math.ceil(context * 0.001));
+	const next = reportedOutput - (requested - context) - reserve;
+	if (!Number.isFinite(next) || next < 1) return undefined;
+	return { nextMaxTokens: Math.floor(next) };
+}
+
+function tokenCount(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number(value.replaceAll(",", ""));
+	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
