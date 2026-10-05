@@ -153,8 +153,13 @@ export function streamConsole(
 			if (!apiFactory) {
 				throw new Error(`Unsupported OpenCode Console API kind: ${String(model.api)}`);
 			}
+			// Duplicate catalog ids are disambiguated in `buildPiModels` with a
+			// `provider/` prefix so pi can list both. The upstream wire API only
+			// understands the raw id, carried separately as `wireId`.
+			const wireId = (model as Model<Api> & { wireId?: string }).wireId;
 			const overridden: Model<Api> = {
 				...model,
+				id: wireId ?? model.id,
 				baseUrl: baseUrlFor(model.baseUrl, apiKind),
 			};
 
@@ -179,6 +184,14 @@ export function streamConsole(
 					...(currentOptions?.headers as Record<string, string> | undefined),
 					"x-opencode-client": ctx.clientName ?? "pi-provider-opencode-console",
 				};
+				// OpenCode routes by a stable per-conversation session id. pi-ai's
+				// built-in opencode providers add this header via
+				// `withOpenCodeSessionHeader`; we delegate to the raw API modules,
+				// so we mirror it here (respecting an explicit override).
+				const sessionId = currentOptions?.sessionId ?? options?.sessionId;
+				if (sessionId && !Object.keys(headers).some((k) => k.toLowerCase() === "x-opencode-session")) {
+					headers["x-opencode-session"] = sessionId;
+				}
 				// `/inference/*` requires the Console's workspace/org header.
 				// `/api/config` uses `x-org-id` instead, but that's only called
 				// from `loadConsoleConfig`, which is outside this code path.

@@ -395,3 +395,42 @@ test("streamConsole omits org identity headers for service-key requests", async 
 		},
 	);
 });
+
+test("streamConsole sends x-opencode-session from options.sessionId", async () => {
+	let session: string | undefined;
+	await withFakeServer(
+		(req) => {
+			session = req.headers["x-opencode-session"];
+			return { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/v1`);
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" }, { sessionId: "sess-123" });
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+			}
+			assert.equal(session, "sess-123");
+		},
+	);
+});
+
+test("streamConsole sends wireId instead of a disambiguated model id", async () => {
+	let body: { model?: string } | undefined;
+	await withFakeServer(
+		(req) => {
+			body = JSON.parse(req.body) as { model?: string };
+			return { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = {
+				...makeModel(`${baseUrl}/v1`, "openai-completions", "opencode-go/deepseek-v4.1-flash"),
+				wireId: "deepseek-v4.1-flash",
+			} as unknown as Model<Api>;
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" });
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+			}
+			assert.equal(body?.model, "deepseek-v4.1-flash");
+		},
+	);
+});
