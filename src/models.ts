@@ -138,28 +138,11 @@ function modelsDevProviderId(mode: OpenCodeMode): string {
  * lands upstream. Ported verbatim from the sister project (synced 2026-10).
  */
 const SUPPLEMENTAL_MODELS: Readonly<Record<"opencode" | "opencode-go", Readonly<Record<string, ModelConfigSource>>>> = {
-	opencode: {
-		"jev-1.13": {
-			id: "jev-1.13",
-			name: "Jev 1.13",
-			family: "jev",
-			limit: { context: 262_144, input: 196_608, output: 131_072 },
-			reasoning: true,
-			tool_call: true,
-			modalities: { input: ["text"] },
-			reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
-		},
-		"jev-1.13-free": {
-			id: "jev-1.13-free",
-			name: "Jev 1.13 Free",
-			family: "jev",
-			limit: { context: 262_144, input: 196_608, output: 131_072 },
-			reasoning: true,
-			tool_call: true,
-			modalities: { input: ["text"] },
-			reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
-		},
-	},
+	// Console currently has no supplemental entries: jev ids were removed —
+	// they are System One decision-protocol models (models.dev lists them
+	// with output limit 0, structured-only, no tool call), unable to serve
+	// chat text; pi's own official config excludes them entirely.
+	opencode: {},
 	"opencode-go": {
 		"hy3-preview": {
 			id: "hy3-preview",
@@ -436,6 +419,10 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 			// Internal OpenCode smoke-test ids leak into authenticated
 			// discovery; they are never real picker entries (sibling parity).
 			if (/^test(?:[-_.]|$)/i.test(rawId.trim())) continue;
+			// Jev ids run the System One decision protocol (structured
+			// choices/scores, no text generation): they cannot serve chat and
+			// pi's official config omits them (models.dev: output limit 0).
+			if (/^jev(?:-|$)/i.test(rawId.trim())) continue;
 			const modelId = typeof source.id === "string" ? source.id : rawId;
 			const api = resolveRoute(modelId, stringField(asRecord(source.provider), "npm") ?? stringField(provider, "npm"), mode);
 			const baseUrl = stringField(asRecord(source.provider), "api") ?? stringField(provider, "api") ?? "";

@@ -372,23 +372,23 @@ test("supplemental metadata fills discovery-only ids before models.dev catalogs 
 	resetModelsDevCacheForTests();
 	const fetcher: typeof fetch = async (input) => {
 		const url = String(input);
-		// models.dev has no opencode model rows in this fixture.
-		if (url.includes("models.dev")) return new Response(JSON.stringify({ opencode: {} }), { status: 200 });
+		// models.dev has no opencode-go model rows in this fixture.
+		if (url.includes("models.dev")) return new Response(JSON.stringify({ "opencode-go": {} }), { status: 200 });
 		return new Response(
-			JSON.stringify({ data: [{ id: "jev-1.13" }] }), // bare live row
+			JSON.stringify({ data: [{ id: "hy3-preview" }] }), // bare live row
 			{ status: 200 },
 		);
 	};
-	const providers = await loadPublicModels("console", "sk-k", fetcher);
-	const entries = buildPiModels(providers, "console");
+	const providers = await loadPublicModels("go", "sk-k", fetcher);
+	const entries = buildPiModels(providers, "go");
 	assert.equal(entries.length, 1);
 	const entry = entries[0]!;
 	// Ported supplemental facts (mirrored from the closest sibling).
-	assert.equal(entry.name, "Jev 1.13");
-	assert.equal(entry.contextWindow, 262_144);
-	assert.equal(entry.maxTokens, 131_072);
+	assert.equal(entry.name, "Hy3 preview");
+	assert.equal(entry.contextWindow, 256_000);
+	assert.equal(entry.maxTokens, 128_000);
 	assert.equal(entry.reasoning, true);
-	assert.deepEqual(entry.thinkingLevelMap, { minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" });
+	assert.deepEqual(entry.thinkingLevelMap, { minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null });
 });
 
 test("canonical models.dev entries supersede supplemental mirrors", async () => {
@@ -397,15 +397,15 @@ test("canonical models.dev entries supersede supplemental mirrors", async () => 
 		const url = String(input);
 		if (url.includes("models.dev")) {
 			return new Response(JSON.stringify({
-				opencode: { npm: "@ai-sdk/openai-compatible", models: { "jev-1.13": { name: "Jev (canonical)", limit: { context: 999 } } } },
+				"opencode-go": { npm: "@ai-sdk/openai-compatible", models: { "minimax-m2.5": { name: "MiniMax (canonical)", limit: { context: 999 } } } },
 			}), { status: 200 });
 		}
-		return new Response(JSON.stringify({ data: [{ id: "jev-1.13" }] }), { status: 200 });
+		return new Response(JSON.stringify({ data: [{ id: "minimax-m2.5" }] }), { status: 200 });
 	};
-	const providers = await loadPublicModels("console", "sk-k", fetcher);
-	const entries = buildPiModels(providers, "console");
+	const providers = await loadPublicModels("go", "sk-k", fetcher);
+	const entries = buildPiModels(providers, "go");
 	const entry = entries[0]!;
-	assert.equal(entry.name, "Jev (canonical)"); // canonical wins
+	assert.equal(entry.name, "MiniMax (canonical)"); // canonical wins
 	assert.equal(entry.contextWindow, 999); // canonical wins (live row sparse)
 });
 
@@ -471,4 +471,22 @@ test("models.dev snapshot is cached within the TTL (one fetch across refreshes)"
 	await loadPublicModels("console", "sk-k", fetcher);
 	await loadPublicModels("console", "sk-k", fetcher);
 	assert.equal(devFetches, 1);
+});
+
+test("jev (System One) ids are filtered from every catalog source", () => {
+	const providers = new Map([[
+		"opencode",
+		{
+			api: "https://gateway.example.test/v1",
+			models: {
+				"jev-1.13": { name: "Jev" },
+				"jev": { name: "Jev Bare" },
+				"jev-2.0": { name: "Jev 2" },
+				"jevron-9": { name: "Not Jev" }, // prefix without boundary — kept
+				"qwen3.8-max": { name: "Qwen3.8 Max" },
+			},
+		} as ProviderSource,
+	]]);
+	const models = buildPiModels(providers);
+	assert.deepEqual(models.map((m) => m.id).sort(), ["jevron-9", "qwen3.8-max"]);
 });

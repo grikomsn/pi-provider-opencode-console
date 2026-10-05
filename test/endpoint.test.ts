@@ -62,8 +62,8 @@ test("resolveRoute family heuristics (sibling parity)", () => {
 	assert.equal(resolveRoute("grok-4.7", undefined), "openai-responses");
 	assert.equal(resolveRoute("grok-build-0.1", ""), "openai-responses");
 	assert.equal(resolveRoute("muse-spark-2", ""), "openai-responses");
-	// Qwen tiers are Messages upstream on both gateways.
-	assert.equal(resolveRoute("qwen3.8-max", ""), "anthropic-messages");
+	// Qwen tiers are Messages upstream on both gateways
+	// (qwen3.8-max is the exact completion-mapped exception, tested below).
 	// Mode-scoped families.
 	assert.equal(resolveRoute("minimax-m3", "", "go"), "anthropic-messages");
 	assert.equal(resolveRoute("minimax-m3", "", "console"), "openai-completions");
@@ -76,4 +76,13 @@ test("resolveRoute family heuristics (sibling parity)", () => {
 	// gpt-/claude- ids keep pre-existing routes.
 	assert.equal(resolveRoute("gpt-6-luna", ""), "openai-responses");
 	assert.equal(resolveRoute("claude-fable-5", ""), "anthropic-messages");
+});
+
+test("resolveRoute qwen3.8-max exact exception routes to completions on both gateways", () => {
+	assert.equal(resolveRoute("qwen3.8-max", ""), "openai-completions");
+	assert.equal(resolveRoute("qwen3.8-max", "", "go"), "openai-completions");
+	assert.equal(resolveRoute("Qwen3.8-Max", ""), "openai-completions");
+	// Other qwen tiers keep the messages family route.
+	assert.equal(resolveRoute("qwen3.8-flash", ""), "anthropic-messages");
+	assert.equal(resolveRoute("qwen3.8-max-free", ""), "anthropic-messages");
 });
