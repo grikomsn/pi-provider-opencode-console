@@ -483,3 +483,61 @@ test("a different transcript derives a different session id, and an explicit opt
 	assert.notEqual(sessions[0], sessions[1]); // different prompts → different ids
 	assert.equal(sessions[2], explicit); // explicit caller id wins over derived
 });
+
+test("streamConsole patches a context-overflow 400 by reducing max_tokens", async () => {
+	const bodies: Array<Record<string, unknown>> = [];
+	const overflow = JSON.stringify({
+		error: {
+			message:
+				"This model's maximum context length is 262,144 tokens, however you requested 300,000 tokens (168,928 in the messages, 131,072 in the completion). Please reduce the length of the messages or completion.",
+		},
+	});
+	await withFakeServer(
+		(req) => {
+			bodies.push(JSON.parse(req.body) as Record<string, unknown>);
+			return bodies.length === 1
+				? { status: 400, contentType: "application/json", body: overflow }
+				: { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = { ...makeModel(`${baseUrl}/v1`), contextWindow: 262_144, maxTokens: 131_072 };
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" });
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+			}
+		},
+	);
+	assert.equal(bodies.length, 2);
+	const sentTokens = (b: Record<string, unknown>): number | undefined =>
+		(b.max_tokens as number | undefined) ?? (b.max_completion_tokens as number | undefined);
+	const first = sentTokens(bodies[0]!)!;
+	const second = sentTokens(bodies[1]!)!;
+	assert.ok(first > second, `expected reduced max_tokens, got ${String(first)} -> ${String(second)}`);
+	assert.strictEqual(second, 92_953);
+});
+
+test("streamConsole retries 500 'Internal server error' and uses a fresh request id per attempt", async () => {
+	const requestIds: string[] = [];
+	const seen: Array<{ requests: number; id: string }> = [];
+	await withFakeServer(
+		(req) => {
+			requestIds.push(req.headers["x-opencode-request"]);
+			seen.push({ requests: requestIds.length, id: req.headers["x-opencode-request"] });
+			return requestIds.length === 1
+				? { status: 500, contentType: "text/plain", body: "Internal server error." }
+				: { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const stream = streamConsole(
+				{ ...makeModel(`${baseUrl}/v1`), contextWindow: 262_144, maxTokens: 131_072 },
+				makeContext("hi"),
+				{ accessToken: "tok" },
+			);
+			for await (const event of stream) {
+				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
+			}
+		},
+	);
+	assert.equal(requestIds.length, 2);
+	assert.ok(requestIds[0] && requestIds[1] && requestIds[0] !== requestIds[1]);
+});
