@@ -255,6 +255,73 @@ test("refreshModels returns [] when /api/config fails", async () => {
 	}
 });
 
+test("refreshModels serves the stored catalog for the cache-only pass", async () => {
+	const pi = makeFakePi();
+	providerFactory(cast(pi));
+	const provider = pi.providers[0]!;
+	const refreshModels = provider.config.refreshModels as (ctx: {
+		allowNetwork?: boolean;
+		stored?: { models: Array<{ id: string; name: string }> };
+	}) => Promise<Array<{ id: string; name: string }>>;
+	// pi calls refreshModels with allowNetwork === false during startup and in
+	// `-p` mode; the composer treats the return value as the authoritative
+	// catalog, so it must be the persisted list rather than [].
+	const stored = {
+		models: [
+			{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
+			{ id: "glm-5.3", name: "GLM 5.3" },
+		],
+	};
+	const models = await refreshModels({ allowNetwork: false, stored });
+	assert.deepEqual(models, stored.models);
+});
+
+test("refreshModels keeps the stored catalog when the network refresh fails", async () => {
+	const pi = makeFakePi();
+	providerFactory(cast(pi));
+	const provider = pi.providers[0]!;
+	const refreshModels = provider.config.refreshModels as (ctx: {
+		signal?: AbortSignal;
+		stored?: { models: Array<{ id: string; name: string }> };
+	}) => Promise<Array<{ id: string; name: string }>>;
+	const server = createServer((req, res) => {
+		req.on("data", () => {});
+		req.on("end", () => {
+			res.writeHead(500);
+			res.end("server error");
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const port = (server.address() as AddressInfo).port;
+	const serverUrl = `http://127.0.0.1:${port}`;
+	try {
+		await withAuthFile(
+			{
+				"opencode-console": {
+					type: "oauth",
+					refresh: "rt",
+					access: "at",
+					expires: Date.now() + 60 * 60_000,
+					env: {
+						OPENCODE_CONSOLE_SERVER: serverUrl,
+						OPENCODE_CONSOLE_ACCOUNT_ID: "acct",
+						OPENCODE_CONSOLE_EMAIL: "u@example.test",
+						OPENCODE_CONSOLE_ORG_ID: "org-1",
+					},
+				},
+			},
+			async () => {
+				const stored = { models: [{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" }] };
+				const models = await refreshModels({ stored });
+				assert.deepEqual(models, stored.models);
+			},
+		);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((r) => server.close(() => r()));
+	}
+});
+
 test("getApiKey returns the access token", async () => {
 	const pi = makeFakePi();
 	providerFactory(cast(pi));
