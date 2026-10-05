@@ -1,0 +1,3 @@
+# Default: both maintainers review everything.
+# DevJake shipped the session-header (PR #9) and cache-catalog (PR #15) fixes.
+* @grikomsn @DevJake
