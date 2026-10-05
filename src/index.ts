@@ -227,9 +227,15 @@ export default function (pi: ExtensionAPI): void {
 			getApiKey: sharedGetApiKey,
 		},
 		async refreshModels(context) {
-			const { signal, publish, credential, allowNetwork } = context;
+			const { signal, publish, credential, allowNetwork, stored } = context;
+			// pi runs a cache-only pass (allowNetwork === false) during startup,
+			// `-p`, and credential changes, then an optional network pass. Its
+			// provider composer applies whatever this returns as the
+			// authoritative catalog, so returning [] here would wipe the
+			// persisted models. Serve the stored catalog instead.
+			const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
+			if (allowNetwork === false) return cached;
 			try {
-				if (allowNetwork === false) return [];
 				// Service key (api_key credential): public Console `/models`
 				// catalog (workspace-scoped filtering when the key is real).
 				// Device session (oauth credential): org-scoped `/api/config`.
@@ -261,8 +267,8 @@ export default function (pi: ExtensionAPI): void {
 				await publishModels(publish, configs);
 				return configs;
 			} catch {
-				// Console deliberately hides models on failure; don't surface stale list.
-				return [] as ProviderModelConfig[];
+				// Keep serving the last known catalog rather than clearing models.
+				return cached;
 			}
 		},
 		streamSimple(model, context, options) {
@@ -294,9 +300,12 @@ export default function (pi: ExtensionAPI): void {
 			getApiKey: sharedGetApiKey,
 		},
 		async refreshModels(context) {
-			const { signal, publish, credential, allowNetwork } = context;
+			const { signal, publish, credential, allowNetwork, stored } = context;
+			// See the console provider: serve the persisted catalog for the
+			// cache-only pass instead of returning an empty list.
+			const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
+			if (allowNetwork === false) return cached;
 			try {
-				if (allowNetwork === false) return [];
 				// Go discovery is always the public `/models` catalog on the Go
 				// gateway (`lite` list) — never the org-scoped `/api/config`.
 				// With a Bearer token, workspace-disabled models are filtered.
@@ -309,7 +318,8 @@ export default function (pi: ExtensionAPI): void {
 				await publishModels(publish, configs);
 				return configs;
 			} catch {
-				return [] as ProviderModelConfig[];
+				// Keep serving the last known catalog rather than clearing models.
+				return cached;
 			}
 		},
 		streamSimple(model, context, options) {
