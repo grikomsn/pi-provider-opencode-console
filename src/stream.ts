@@ -43,6 +43,41 @@ import {
 const MAX_TRANSIENT_RETRIES = 2;
 const MAX_PATCH_RETRIES = 2;
 
+/**
+ * Derive a stable per-conversation session id from the transcript itself,
+ * used when the caller does not supply `options.sessionId`. Ported from the
+ * sister bridge's `sessionIdFrom` (FNV-1a over the wire model id plus the
+ * first two messages' text), so the gateway's required `x-opencode-session`
+ * routing header is present on every request regardless of runtime plumbing.
+ * Deterministic by construction, so retries within a conversation re-send
+ * the same id.
+ */
+export function deriveSessionId(wireModelId: string, messages: readonly unknown[] | undefined): string {
+	const seed = `${wireModelId}:${(messages ?? []).slice(0, 2).map(messageText).join("|")}`;
+	let hash = 2166136261;
+	for (let index = 0; index < seed.length; index += 1) hash = Math.imul(hash ^ seed.charCodeAt(index), 16777619);
+	return `pi-${(hash >>> 0).toString(16)}`;
+}
+
+function messageText(message: unknown): string {
+	if (typeof message === "string") return message;
+	const content = (message as { content?: unknown } | null | undefined)?.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => (asRecord(part).type === "text" ? stringField(asRecord(part), "text") ?? "" : ""))
+		.join(" ");
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
 function signalSleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
@@ -187,8 +222,12 @@ export function streamConsole(
 				// OpenCode routes by a stable per-conversation session id. pi-ai's
 				// built-in opencode providers add this header via
 				// `withOpenCodeSessionHeader`; we delegate to the raw API modules,
-				// so we mirror it here (respecting an explicit override).
-				const sessionId = currentOptions?.sessionId ?? options?.sessionId;
+				// so we mirror it here (respecting an explicit override). When the
+				// caller supplies no session id, fall back to a deterministic id
+				// derived from the transcript, mirroring the sister bridge, so the
+				// Go surface keeps its required routing key on every request.
+				const sessionId =
+					currentOptions?.sessionId ?? options?.sessionId ?? deriveSessionId(overridden.id, context.messages);
 				if (sessionId && !Object.keys(headers).some((k) => k.toLowerCase() === "x-opencode-session")) {
 					headers["x-opencode-session"] = sessionId;
 				}
