@@ -53,6 +53,10 @@ export function resolveRoute(modelId: string, npm?: string, mode: OpenCodeMode =
 	// Family-scoped: minimax and gemini only appear on their own gateway.
 	if (/^grok(?:-|$)/i.test(modelId)) return "openai-responses";
 	if (/^muse-spark-/i.test(modelId)) return "openai-responses";
+	// The endpoint table gives this model a different API from other Qwen
+	// models: it is OpenAI-completions on both gateways (pi's official config
+	// agrees; tanstack router + pi.dev pages corroborate).
+	if (/^qwen3\.8-max$/i.test(modelId)) return "openai-completions";
 	if (/^qwen/i.test(modelId)) return "anthropic-messages";
 	if (mode === "go" && /^minimax-/i.test(modelId)) return "anthropic-messages";
 	if (mode === "console" && /^gemini-/i.test(modelId)) return "google-generative-ai";
