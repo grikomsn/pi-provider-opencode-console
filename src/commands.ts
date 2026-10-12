@@ -1,9 +1,9 @@
 /**
  * Registers the `/opencode-console` and `/opencode-go-console` commands for
  * managing the OpenCode providers: status, refresh, switch org (Console
- * only), logout. Works with both stored credential types — device-code
- * OAuth sessions and `sk-` service keys (pi's standard `type: "api_key"`
- * auth.json entries).
+ * only), logout. Operates on the stored device-code OAuth session
+ * (`type: "oauth"` auth.json entries) — API-key (service key) auth is no
+ * longer supported.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -14,11 +14,10 @@ import {
 	loadCredential,
 	listSessionOrgs,
 	saveSession,
-	summarizeKey,
 } from "./auth.ts";
-import type { ApiKeyStoredCredential, ConsoleSession } from "./auth.ts";
+import type { ConsoleSession } from "./auth.ts";
 import { buildPiModels, loadConsoleConfig, loadPublicModels } from "./models.ts";
-import { apiBaseForMode, type OpenCodeMode } from "./endpoint.ts";
+import type { OpenCodeMode } from "./endpoint.ts";
 
 const SUBCOMMANDS = {
 	status: "status",
@@ -82,11 +81,6 @@ function registerManageCommand(pi: ExtensionAPI, opts: ManageOptions): void {
 				return;
 			}
 
-			if (cred.kind === "api_key") {
-				await serviceKeyCommand(subcommand, ctx, opts, cred);
-				return;
-			}
-
 			if (subcommand === "switch-org") {
 				if (opts.allowSwitchOrg) {
 					await switchOrg(ctx, cred.session);
@@ -123,35 +117,6 @@ function registerManageCommand(pi: ExtensionAPI, opts: ManageOptions): void {
 	});
 }
 
-async function serviceKeyCommand(
-	subcommand: string,
-	ctx: ExtensionCommandContext,
-	opts: ManageOptions,
-	cred: ApiKeyStoredCredential,
-): Promise<void> {
-	if (subcommand === "switch-org") {
-		ctx.ui.notify(
-			opts.allowSwitchOrg
-				? "switch-org requires a device-code session; service keys are scoped to their workspace."
-				: `switch-org is not available for ${opts.displayName}; the organization is chosen at sign-in.`,
-			"warning",
-		);
-		return;
-	}
-	if (subcommand === "refresh" || subcommand === "models") {
-		await refreshPublicModels(ctx, opts, cred.key);
-		return;
-	}
-	// Default: status
-	const lines = [
-		`${opts.displayName} status`,
-		`  Auth: service key (${summarizeKey(cred.key)})`,
-		`  Catalog: public /models on ${apiBaseForMode(opts.catalogMode)} (workspace-scoped)`,
-		"  Org: none (service keys are scoped to their workspace)",
-	];
-	ctx.ui.notify(lines.join("\n"), "info");
-}
-
 async function refreshPublicModels(
 	ctx: ExtensionCommandContext,
 	opts: ManageOptions,
@@ -173,6 +138,13 @@ async function refreshPublicModels(
 }
 
 async function switchOrg(ctx: ExtensionCommandContext, session: ConsoleSession): Promise<void> {
+	if (session.scopedOrgId) {
+		ctx.ui.notify(
+			"This Console session is scoped to the organization chosen at sign-in; sign in again to switch.",
+			"warning",
+		);
+		return;
+	}
 	try {
 		const fresh = await ensureFreshSession(session);
 		const orgs = await listSessionOrgs(fetch, fresh);
@@ -227,12 +199,14 @@ async function showStatus(
 	const serverLabel = isPublicConsoleServer(session.server)
 		? session.server
 		: `${session.server} (custom)`;
+	const orgLabel = session.orgName
+		?? (opts.allowSwitchOrg ? "(none — run /opencode-console switch-org)" : "(none)");
 	const lines = [
 		`${opts.displayName} status`,
-		"  Auth: device-code session",
+		"  Auth: device-code (OAuth) session",
 		`  Server: ${serverLabel}`,
 		`  Account: ${session.email || session.accountId || "(unknown)"}`,
-		`  Org: ${session.orgName ?? (opts.allowSwitchOrg ? "(none — run /opencode-console switch-org)" : "(none)")}`,
+		`  Org: ${orgLabel}${session.scopedOrgId ? " (server-scoped at sign-in)" : ""}`,
 		`  Token expires in: ${expiresInMin}m`,
 	];
 	ctx.ui.notify(lines.join("\n"), "info");

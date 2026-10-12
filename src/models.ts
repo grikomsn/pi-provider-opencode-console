@@ -2,11 +2,11 @@
  * Loads model catalogs from OpenCode Console `/api/config` (org-scoped,
  * device sessions) plus the public `/models` catalogs of the Console
  * (`https://opencode.ai/zen/v1`) and Go (`https://opencode.ai/zen/go/v1`)
- * gateways (service keys / go mode), and projects them to pi's
- * `ProviderModelConfig` shape.
+ * gateways (Go mode, called with the session's access token), and projects
+ * them to pi's `ProviderModelConfig` shape.
  */
 
-import { apiBaseForMode, resolveRoute, type ApiKind, type OpenCodeMode } from "./endpoint.ts";
+import { apiBaseForMode, EXTENSION_API, resolveRoute, type ApiKind, type OpenCodeMode } from "./endpoint.ts";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevelMap } from "@earendil-works/pi-ai/compat";
 
@@ -106,7 +106,11 @@ export interface BuiltModel {
 	wireId: string;
 	name: string;
 	provider: string;
-	api: ApiKind;
+	/** pi-level API kind — always the registered extension api so the
+	 * provider composer routes every model through our streamSimple wrapper. */
+	api: typeof EXTENSION_API;
+	/** Real gateway route (wire API) for this model. */
+	route: ApiKind;
 	baseUrl: string;
 	contextWindow: number;
 	maxTokens: number;
@@ -115,6 +119,7 @@ export interface BuiltModel {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 	headers?: Record<string, string>;
 	thinkingLevelMap?: ThinkingLevelMap;
+	compat?: { forceAdaptiveThinking?: boolean };
 }
 
 /**
@@ -435,17 +440,44 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 				? { ...(providerHeaders ?? {}), ...(modelHeaders ?? {}) }
 				: undefined;
 			const thinkingLevelMap = deriveThinkingLevelMap(source.reasoning_options);
+			// Live-verified (2026-10-12): the gateway rejects `thinking:
+			// {type: "disabled"}` for adaptive-thinking Claude models ("use
+			// thinking.type.adaptive and output_config.effort"). Sister parity
+			// (opencode-copilot-chat #63): "off" omits the thinking field entirely;
+			// enabled = adaptive + effort. pi-ai omits the field only when
+			// thinkingLevelMap.off === null and sends adaptive only under
+			// compat.forceAdaptiveThinking — provide both when the catalog gives
+			// no reasoning_options for a reasoning-capable Claude model.
+			const isAdaptiveClaude =
+				api === "anthropic-messages" && /^claude-/i.test(modelId) && source.reasoning === true;
+			const thinking = thinkingLevelMap
+				? { thinkingLevelMap }
+				: isAdaptiveClaude
+					? {
+						thinkingLevelMap: {
+							off: null,
+							minimal: "low",
+							low: "low",
+							medium: "medium",
+							high: "high",
+							xhigh: "xhigh",
+							max: "max",
+						},
+						compat: { forceAdaptiveThinking: true },
+					}
+					: {};
 			entries.push({
 				id: rawId,
 				wireId: rawId,
 				name: typeof source.name === "string" ? source.name : rawId,
 				provider: providerId,
-				api,
+				api: EXTENSION_API,
+				route: api,
 				baseUrl,
 				contextWindow: context,
 				maxTokens: output,
 				reasoning: source.reasoning === true,
-				...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+				...thinking,
 				input: imageCapable(source) ? ["text", "image"] : ["text"],
 				cost: {
 					input: num(source.cost?.input, 0),
@@ -505,11 +537,13 @@ export function toProviderModelConfigs(entries: BuiltModel[]): ProviderModelConf
 		reasoning: m.reasoning,
 		input: m.input,
 		cost: m.cost,
-		// `wireId` is not part of pi's ProviderModelConfig type, but the runtime
-		// preserves unknown fields on extension models, so it reaches
-		// `streamConsole` where it replaces the disambiguated id on the wire.
+		// `wireId`/`wireApi` are not part of pi's ProviderModelConfig type, but
+		// the runtime preserves unknown fields on extension models, so they
+		// reach `streamConsole` where they drive wire id + gateway routing.
 		wireId: m.wireId,
+		wireApi: m.route,
 		...(m.headers ? { headers: m.headers } : {}),
 		...(m.thinkingLevelMap ? { thinkingLevelMap: m.thinkingLevelMap } : {}),
+		...(m.compat ? { compat: m.compat } : {}),
 	})) as unknown as ProviderModelConfig[];
 }

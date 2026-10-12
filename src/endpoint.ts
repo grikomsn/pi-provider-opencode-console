@@ -29,10 +29,20 @@ export const GO_API_BASE_URL = "https://opencode.ai/zen/go/v1";
 
 /**
  * `OpenCodeMode` mirrors upstream's two auth systems after the Zen→Console
- * merge: both Console and Go authenticate device-code sessions via the shared
- * Console device flow, and both accept workspace `sk-` service keys.
+ * merge: Console and Go authenticate via OAuth device-code sessions on the
+ * shared Console device flow. (Workspace `sk-` service-key support was
+ * removed in 2.0.)
  */
 export type OpenCodeMode = "console" | "go";
+
+/**
+ * The API kind every provider registration uses. Built models carry this
+ * value in their pi-level `api` field (so pi's provider composer routes ALL
+ * of them through our streamSimple wrapper — the composer only delegates to
+ * extension streamSimple when `model.api === extension.api`), while the real
+ * gateway route travels in the model's `wireApi` field.
+ */
+export const EXTENSION_API = "openai-completions";
 
 /** Public `/models` catalog base for a mode (console zen `full`, go `lite`). */
 export function apiBaseForMode(mode: OpenCodeMode): string {

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — 2.0.0 (BREAKING)
+
+### Major Changes
+
+- **BREAKING: API-key (service key) auth removed — device-code (OAuth) sign-in is now the only auth method.** Both providers register OAuth-only auth, so pi's `/login` offers just the "…(OAuth device code)" path (no native "Enter API key" prompt), and stored `{ "type": "api_key" }` auth.json entries no longer resolve.
+  - Removed the `apiKey: "$OPENCODE_API_KEY"` registration, service-key credential resolution, the `serviceKey` stream flag and its terminal-401 behavior, the service-key `/models` catalog paths, and the service-key command branches.
+  - Console model discovery is always the org-scoped `/api/config` catalog; Go keeps the public `/models` catalog, now called with the session's access token.
+  - Auth-facing copy now says "(OAuth)" / "device code" — provider names "OpenCode Console (OAuth device code)" / "OpenCode Go (OAuth device code)", status line "Auth: device-code (OAuth) session" — so the method reads unambiguously against pi's native API-key option.
+  - **Migrating:** delete any `api_key` entries for `opencode-console` / `opencode-go-console` from `~/.pi/agent/auth.json` (they are inert) and run `/login opencode-console` (or `/login opencode-go-console`).
+- **Org-scoped device sign-in.** The device authorization request now opts in to organization scoping (`supports_org_scope`), matching the sister projects: the workspace is chosen during browser approval when the Console grants a scoped session (`org_id` at token exchange, persisted and honored across refreshes; scope changes are rejected). Un-scoped single-org accounts self-select and multi-org accounts pick explicitly after sign-in — no silent first-org pin. `switch-org` is rejected for server-scoped sessions ("sign in again to switch").
+- **Fixed streaming for non-OpenAI-routed models.** Catalog models now carry the extension-level `api` (so pi's provider composer routes every model through this extension's stream wrapper) with the real gateway route in `wireApi`; previously, anthropic/google-routed models bypassed the wrapper and hit the gateway with a doubled `/v1` (`…/inference/anthropic/v1/v1/messages`) and failed with 404.
+
 ## 1.0.5
 
 ### Patch Changes

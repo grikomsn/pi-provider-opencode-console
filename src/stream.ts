@@ -141,8 +141,6 @@ const apiMap: Record<ApiKind, () => ProviderStreams> = {
 
 export interface StreamContext {
 	accessToken: string;
-	/** Set when the token is a static service key (401s are terminal). */
-	serviceKey?: boolean;
 	orgId?: string;
 	requestId?: string;
 	clientName?: string;
@@ -184,18 +182,22 @@ export function streamConsole(
 	const stream = createAssistantMessageEventStream();
 	(async () => {
 		try {
-			const apiKind = model.api as ApiKind;
-			const apiFactory = apiMap[apiKind];
-			if (!apiFactory) {
-				throw new Error(`Unsupported OpenCode Console API kind: ${String(model.api)}`);
-			}
 			// Duplicate catalog ids are disambiguated in `buildPiModels` with a
 			// `provider/` prefix so pi can list both. The upstream wire API only
-			// understands the raw id, carried separately as `wireId`.
-			const wireId = (model as Model<Api> & { wireId?: string }).wireId;
+			// understands the raw id, carried separately as `wireId`; the real
+			// gateway route travels as `wireApi` (pi-level `api` is always the
+			// registered extension api so the composer routes every model here).
+			const wire = model as Model<Api> & { wireApi?: ApiKind; wireId?: string };
+			const wireId = wire.wireId;
+			const apiKind = wire.wireApi ?? (model.api as ApiKind);
+			const apiFactory = apiMap[apiKind];
+			if (!apiFactory) {
+				throw new Error(`Unsupported OpenCode Console API kind: ${String(apiKind)}`);
+			}
 			const overridden: Model<Api> = {
 				...model,
 				id: wireId ?? model.id,
+				api: apiKind,
 				baseUrl: baseUrlFor(model.baseUrl, apiKind),
 			};
 
@@ -240,9 +242,9 @@ export function streamConsole(
 				// including retries), independent of session state.
 				headers["x-opencode-request"] = crypto.randomUUID();
 
-				// The auth token: the loaded session/key context wins, falling
-				// back to the runtime-resolved `options.apiKey` (pi's auth
-				// resolution refreshes OAuth and injects service keys upstream).
+				// The auth token: the loaded session context wins, falling back
+				// to the runtime-resolved `options.apiKey` (pi's auth
+				// resolution refreshes OAuth upstream).
 				const innerOpts: SimpleStreamOptions = {
 					...currentOptions,
 					apiKey: ctx.accessToken || currentOptions?.apiKey,
@@ -282,8 +284,7 @@ export function streamConsole(
 
 				const status = errorMessage ? statusFromErrorMessage(errorMessage) : undefined;
 				// 401: the access token was rejected — force-refresh once and retry.
-				// Service keys never rotate, so a rejection is terminal for them.
-				if (status === 401 && !ctx.serviceKey && forwarded === 0 && !usedAuthRetry && ctx.refreshSession) {
+				if (status === 401 && forwarded === 0 && !usedAuthRetry && ctx.refreshSession) {
 					usedAuthRetry = true;
 					ctx = await ctx.refreshSession();
 					continue;

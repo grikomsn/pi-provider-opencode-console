@@ -8,13 +8,15 @@
 [![CI](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml/badge.svg)](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode Console](https://opencode.ai/console) that signs in via the OAuth 2.0 device authorization grant and discovers account-specific models from the org-scoped `/api/config` endpoint. Ships two providers mirroring OpenCode's two auth systems: **OpenCode Console** (`opencode-console`) and **OpenCode Go** (`opencode-go-console`) — both support device-code sign-in and `sk-` service keys.
+A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode Console](https://opencode.ai/console) that signs in via the OAuth 2.0 device authorization grant and discovers account-specific models from the org-scoped `/api/config` endpoint. Ships two providers mirroring OpenCode's two auth systems: **OpenCode Console** (`opencode-console`) and **OpenCode Go** (`opencode-go-console`) — both sign in exclusively via device-code (OAuth).
+
+> **Breaking change in 2.0:** the `sk-` service-key (API-key) auth method was removed. See [Authenticate](#authenticate) for the migration note.
 
 ## Features
 
-- OAuth 2.0 device authorization grant (RFC 8628) sign-in via `/login opencode-console` (and `/login opencode-go-console` — Go reuses the shared Console device flow)
-- Service-key auth via pi's standard `auth.json` `api_key` entries (no custom secret stores)
-- Console: per-org model discovery from the org-scoped `GET /api/config` endpoint; with a service key, the public `GET https://opencode.ai/zen/v1/models` catalog
+- OAuth 2.0 device authorization grant (RFC 8628) sign-in via `/login opencode-console` (and `/login opencode-go-console` — Go reuses the shared Console device flow); pi's `/login` lists both providers as "…(OAuth device code)", distinct from pi's native API-key option
+- Org-scoped sign-in: the device grant requests organization scoping, so the workspace is chosen during browser approval when the Console grants it; otherwise a single-org account self-selects and multi-org accounts pick explicitly after sign-in
+- Console: per-org model discovery from the org-scoped `GET /api/config` endpoint
 - Go: the public `GET https://opencode.ai/zen/go/v1/models` catalog (the auth-ignored `lite` list), requests targeting the Go gateway
 - Public catalog rows are enriched from models.dev and drop disabled/deprecated ids
 - Routes chat requests to the right upstream wire API per-model (`anthropic-messages`, `openai-completions`, `openai-responses`, `google-generative-ai`)
@@ -38,9 +40,13 @@ pi -e ./src/index.ts
 
 ## Authenticate
 
-OpenCode has two auth systems — **Console** (which absorbed Zen) and **Go** (the subscription gateway). Both accept device-code sessions and workspace `sk-` service keys; pi stores exactly one credential per provider id in `~/.pi/agent/auth.json`, so a stored credential owns the provider.
+OpenCode has two auth systems — **Console** (which absorbed Zen) and **Go** (the subscription gateway). Both providers here sign in with an OAuth device-code session on the shared Console device flow; pi stores exactly one credential per provider id in `~/.pi/agent/auth.json`, so the stored oauth credential owns the provider.
 
-### 1. Device-code sign-in (either provider)
+> **Note:** this extension is OAuth-only by design. pi's generic "Enter API key" login is not offered for these providers — if you want plain API-key access with a static model list, use pi's built-in `opencode` / `opencode-go` providers instead.
+
+> **Migrating from service keys (pre-2.0):** service-key auth was removed in 2.0. Any `{ "type": "api_key", "key": "sk-…" }` entries for `opencode-console` / `opencode-go-console` in `~/.pi/agent/auth.json` are now inert (pi reports "Provider is not configured"). Delete those entries and run the device-code sign-in below.
+
+### Device-code (OAuth) sign-in
 
 ```
 /login opencode-console
@@ -48,36 +54,23 @@ OpenCode has two auth systems — **Console** (which absorbed Zen) and **Go** (t
 /login opencode-go-console
 ```
 
-Pi prints a user code and the verification URL. Approve the sign-in in your browser. For Console, if your account has multiple orgs, Pi prompts you to pick one (persisted to `auth.json`); Go orgs are the Console org — the session is shared.
+Pi prints a user code and the verification URL. Approve the sign-in in your browser — if the Console grants an org-scoped session, the organization is the one you pick during browser approval (pi shows it as "server-scoped at sign-in"). Un-scoped single-org accounts self-select; multi-org accounts are prompted to pick one (persisted to `auth.json`). Go orgs are the Console org — the session is shared. A server-scoped session cannot switch organizations locally; sign in again to choose a different one.
 
-### 2. Service keys (alternative)
+Model catalogs by provider:
 
-Create an API key in the Console (or Go docs: "OpenCode Zen API key" — the same workspace `sk-…` key family works on both gateways) and store it in `~/.pi/agent/auth.json` under the matching provider id:
+| Provider | Catalog |
+| --- | --- |
+| `opencode-console` | org-scoped `GET {server}/api/config` with `Authorization: Bearer` + `x-org-id` |
+| `opencode-go-console` | public `GET https://opencode.ai/zen/go/v1/models` (`lite` list), called with the session's access token |
 
-```json
-{
-  "opencode-console": { "type": "api_key", "key": "sk-…" },
-  "opencode-go-console": { "type": "api_key", "key": "sk-…" }
-}
-```
-
-Storing a service key replaces any device-code entry for that provider id (one credential per provider id). After editing, run `/reload` to refresh the provider. Service keys are static: they are never refreshed, so a rejected key (`401`) surfaces as a terminal error rather than a retry. With no credential stored, the `$OPENCODE_API_KEY` environment variable is used as a fallback — the same env var upstream and pi's built-in providers use.
-
-Model catalogs by credential:
-
-| Credential | OpenCode Console (`opencode-console`) | OpenCode Go (`opencode-go-console`) |
-| --- | --- | --- |
-| Device session | org-scoped `GET {server}/api/config` with `Authorization: Bearer` + `x-org-id` | public `GET https://opencode.ai/zen/go/v1/models` (`lite` list) |
-| Service key | public `GET https://opencode.ai/zen/v1/models` (workspace-scoped filtering when a real key is sent) | public `GET https://opencode.ai/zen/go/v1/models` (`lite` list) |
-
-### 3. Manage
+### Manage
 
 Run the provider commands to manage credentials:
 
 ```
-/opencode-console status       # default; shows auth method, account, org, token expiry
-/opencode-console refresh      # re-pull the catalog (org-scoped or public per credential)
-/opencode-console switch-org   # device sessions only; re-pick the org
+/opencode-console status       # default; shows auth method (device-code OAuth session), account, org, token expiry
+/opencode-console refresh      # re-pull the org-scoped catalog
+/opencode-console switch-org   # un-scoped sessions only; re-pick the org (scoped sessions: sign in again)
 /opencode-console logout       # clear the credential
 
 /opencode-go-console status    # auth method + account + org
@@ -93,20 +86,19 @@ Run the provider commands to manage credentials:
 
 ## Why separate providers?
 
-The built-in `opencode` and `opencode-go` providers in Pi handle API-key-only access with static model lists. This extension deliberately registers distinct ids (`opencode-console`, `opencode-go-console`) so the built-ins stay untouched, while adding the device-flow session, live catalogs, and org awareness that the built-ins do not have — mirroring the behavior of the sister project (`opencode-copilot-chat`).
+The built-in `opencode` and `opencode-go` providers in Pi handle API-key-only access with static model lists. This extension deliberately registers distinct ids (`opencode-console`, `opencode-go-console`) so the built-ins stay untouched, while adding the OAuth device-code session, live catalogs, and org awareness that the built-ins do not have — mirroring the behavior of the sister project (`opencode-copilot-chat`).
 
 ## Architecture
 
 ```
 pi extension entry (src/index.ts)
-  ├─ registerProvider("opencode-console", { apiKey, oauth, refreshModels, streamSimple })
-  │    ├─ apiKey: "$OPENCODE_API_KEY"  → pi's api_key credential resolution (service keys)
+  ├─ registerProvider("opencode-console", { oauth, refreshModels, streamSimple })   [OAuth-only: no apiKey method]
   │    ├─ oauth.login      → shared device-code flow + org picker → auth.json[providerId]
   │    ├─ oauth.refreshToken → canonical refresh + sibling mirror (shared session)
-  │    ├─ refreshModels    → /api/config (session) | public /models (service key)
-  │    └─ streamSimple     → streamConsoleWithSession (per-credential loader)
-  ├─ registerProvider("opencode-go-console", { apiKey, oauth, refreshModels, streamSimple })
-  │    ├─ refreshModels    → public /models on the Go gateway (lite list)
+  │    ├─ refreshModels    → org-scoped /api/config
+  │    └─ streamSimple     → streamConsoleWithSession (session loader)
+  ├─ registerProvider("opencode-go-console", { oauth, refreshModels, streamSimple }) [OAuth-only]
+  │    ├─ refreshModels    → public /models on the Go gateway (lite list, session token)
   │    └─ streamSimple     → streamConsoleWithSession (Go entry, Console-entry fallback)
   └─ registerCommand for both providers
        streamConsole → delegates to pi-ai's lazy APIs

@@ -1,21 +1,21 @@
 /**
  * pi extension entry: registers the OpenCode Console provider
  * (`opencode-console`) and the OpenCode Go provider (`opencode-go-console`)
- * with the shared device-auth OAuth flow, API-key (service key) auth, lazy
- * model discovery, and stream wrappers that delegate to pi-ai's built-in
- * API implementations.
+ * with the shared device-auth OAuth flow, lazy model discovery, and stream
+ * wrappers that delegate to pi-ai's built-in API implementations.
  *
- * Auth model (upstream opencode console/go):
- * - Both providers authenticate device-code sessions through the shared
- *   Console OAuth device flow (`opencode-cli` client) and accept workspace
- *   `sk-` service keys (pi's standard `type: "api_key"` auth.json entries).
- * - Console: oauth session → org-scoped `/api/config` catalog; service
- *   key → public `https://opencode.ai/zen/v1/models` catalog.
+ * Auth model (OAuth device code only):
+ * - Both providers authenticate through the shared Console OAuth device
+ *   flow (`opencode-cli` client). API-key (service key) auth was removed —
+ *   these providers register no `apiKey` method, so pi offers only the
+ *   device-code sign-in path and stored `api_key` auth.json entries no
+ *   longer resolve.
+ * - Console: org-scoped `/api/config` catalog.
  * - Go: always the public `https://opencode.ai/zen/go/v1/models` catalog
- *   (auth-ignored `lite` list); requests go to the Go gateway.
- * - Stored credential owns the provider (pi's one-credential-per-id rule);
- *   the `$OPENCODE_API_KEY` env template is the ambient fallback only when
- *   nothing is stored, matching upstream's own env convention.
+ *   (`lite` list), called with the session's access token; requests go to
+ *   the Go gateway.
+ * - The stored oauth credential owns the provider (pi's
+ *   one-credential-per-id rule).
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
@@ -45,6 +45,7 @@ import type { ConsoleSession } from "./auth.ts";
 import { buildPiModels, loadConsoleConfig, loadPublicModels, toProviderModelConfigs } from "./models.ts";
 import { streamConsoleWithSession } from "./stream.ts";
 import type { BuiltModel } from "./models.ts";
+import { EXTENSION_API } from "./endpoint.ts";
 import { registerCommand } from "./commands.ts";
 
 /** The shared device-flow login used by both provider registrations. */
@@ -67,10 +68,13 @@ async function deviceLogin(
 		onProgress: callbacks.onProgress,
 	});
 
-	// Org selection (only if more than one).
+	// Org selection: the device grant may have scoped the session to an org
+	// chosen during browser approval (orgId set, scopedOrgId present). Only
+	// prompt when the session has no org yet and the account has multiple —
+	// never auto-pin; single-org accounts are pre-selected by the auth layer.
 	let chosenOrgId = session.orgId;
 	let chosenOrgName = session.orgName;
-	if (session.orgs.length > 1) {
+	if (!session.orgId && session.orgs.length > 1) {
 		const options = session.orgs.map((o) => ({
 			id: o.id,
 			label: `${o.name} (${o.id})`,
@@ -162,7 +166,7 @@ function sharedGetApiKey(credentials: OAuthCredentials): string {
 }
 
 /**
- * Session loader for `streamSimple`: resolves the service key or device
+ * Session loader for `streamSimple`: resolves the device-code OAuth
  * session (with per-provider fallback — the Go provider shares the Console
  * session), running inside the returned stream's async loop. `force` is set
  * when the server answered 401 mid-stream.
@@ -177,10 +181,6 @@ function makeStreamLoader(providerId: string) {
 		const cred = (await loadCredential(providerId)) ?? (await loadCredential(fallbackId));
 		if (!cred) {
 			throw new Error(notSignedIn);
-		}
-		// Stored service keys are static: no refresh, no org identity.
-		if (cred.kind === "api_key") {
-			return { accessToken: cred.key, serviceKey: true };
 		}
 		const fresh = await ensureFreshSession(cred.session, force === true);
 		return {
@@ -212,15 +212,13 @@ async function publishModels(
 export default function (pi: ExtensionAPI): void {
 	pi.registerProvider(PROVIDER_ID, {
 		name: "OpenCode Console",
-		api: "openai-completions",
+		api: EXTENSION_API,
 		models: [],
-		// Registers API-key auth so pi's standard `{ type: "api_key", key }`
-		// auth.json entries (service keys) resolve. Requests prefer the stored
-		// credential; the env template is pi's ambient fallback when no
-		// credential is stored — matching upstream's own `OPENCODE_API_KEY`.
-		apiKey: "$OPENCODE_API_KEY",
+		// OAuth-only: no `apiKey` registration, so pi's /login offers just
+		// the device-code path (pi's native "Enter API key" method is not
+		// available for these providers).
 		oauth: {
-			name: "OpenCode Console (device sign-in)",
+			name: "OpenCode Console (OAuth device code)",
 			isSubscription: true,
 			login: (callbacks) => deviceLogin(PROVIDER_ID, callbacks),
 			refreshToken: sharedRefreshToken,
@@ -236,33 +234,25 @@ export default function (pi: ExtensionAPI): void {
 			const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
 			if (allowNetwork === false) return cached;
 			try {
-				// Service key (api_key credential): public Console `/models`
-				// catalog (workspace-scoped filtering when the key is real).
-				// Device session (oauth credential): org-scoped `/api/config`.
-				const serviceKeyProviders =
-					credential?.type === "api_key" && credential.key
-						? await loadPublicModels("console", credential.key, fetch, signal)
-						: undefined;
-				const models: BuiltModel[] = serviceKeyProviders
-					? buildPiModels(serviceKeyProviders)
-					: await (async () => {
-						const session = await loadSession();
-						if (!session || !session.orgId) {
-							return [] as BuiltModel[];
-						}
-						const fresh = await ensureFreshSession(session);
-						if (!fresh.orgId) {
-							return [] as BuiltModel[];
-						}
-						const providers = await loadConsoleConfig(
-							fresh.server,
-							fresh.accessToken,
-							fresh.orgId,
-							fetch,
-							signal,
-						);
-						return buildPiModels(providers);
-					})();
+				// Device-code session: org-scoped `/api/config` catalog.
+				const models: BuiltModel[] = await (async () => {
+					const session = await loadSession();
+					if (!session || !session.orgId) {
+						return [] as BuiltModel[];
+					}
+					const fresh = await ensureFreshSession(session);
+					if (!fresh.orgId) {
+						return [] as BuiltModel[];
+					}
+					const providers = await loadConsoleConfig(
+						fresh.server,
+						fresh.accessToken,
+						fresh.orgId,
+						fetch,
+						signal,
+					);
+					return buildPiModels(providers);
+				})();
 				const configs = toProviderModelConfigs(models);
 				await publishModels(publish, configs);
 				return configs;
@@ -287,13 +277,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerProvider(GO_PROVIDER_ID, {
 		name: "OpenCode Go",
-		api: "openai-completions",
+		api: EXTENSION_API,
 		models: [],
-		apiKey: "$OPENCODE_API_KEY",
 		oauth: {
 			// Go subscriptions are managed in the OpenCode Console; device
 			// sign-in for Go reuses the shared Console device flow.
-			name: "OpenCode Go (device sign-in)",
+			name: "OpenCode Go (OAuth device code)",
 			isSubscription: true,
 			login: (callbacks) => deviceLogin(GO_PROVIDER_ID, callbacks),
 			refreshToken: sharedRefreshToken,
@@ -308,10 +297,9 @@ export default function (pi: ExtensionAPI): void {
 			try {
 				// Go discovery is always the public `/models` catalog on the Go
 				// gateway (`lite` list) — never the org-scoped `/api/config`.
-				// With a Bearer token, workspace-disabled models are filtered.
-				const token = credential?.type === "api_key" ? credential.key
-					: credential?.type === "oauth" ? credential.access
-					: undefined;
+				// With the session's Bearer access token, workspace-disabled
+				// models are filtered.
+				const token = credential?.type === "oauth" ? credential.access : undefined;
 				const providers = await loadPublicModels("go", token, fetch, signal);
 				const models = buildPiModels(providers, "go");
 				const configs = toProviderModelConfigs(models);

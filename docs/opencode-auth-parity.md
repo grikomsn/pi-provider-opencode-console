@@ -1,5 +1,12 @@
 # OpenCode auth parity research — pi-provider-opencode-console
 
+> **2026 update (2.0):** the service-key (API-key) method described below was
+> **removed**. Both providers are now OAuth-only (device code). The research
+> below is retained as a historical record; sections A3/A5 and the "Adopted
+> design" items about `apiKey` registration, `$OPENCODE_API_KEY`, and
+> service-key catalog/command paths no longer apply. See
+> [`api-key-removal-plan.md`](api-key-removal-plan.md) for the removal inventory.
+
 Task-1 findings for goal `muumr2dy-0dzpb4`. Sources:
 - **[upstream]** https://github.com/anomalyco/opencode/ (shallow clone retained at `/tmp/opencode-upstream`) — scout `upstream-scout` (run 18624155-5bd2-488c-9482-3df9dc6a0694).
 - **[sister]** `~/Workspace/grikomsn/opencode-copilot-chat` (read-only recon) — scout `sister-scout` (run b5fc1920-5db1-4682-abef-10153f9dacc8).

@@ -343,55 +343,31 @@ test("streamConsole does not retry after content has been forwarded", async () =
 	);
 });
 
-test("streamConsole treats a service-key 401 as terminal (no refresh retry)", async () => {
+test("streamConsole retries a 401 once via refreshSession", async () => {
 	let calls = 0;
 	let refreshes = 0;
 	await withFakeServer(
 		() => {
 			calls++;
-			return { status: 401, body: "unauthorized", contentType: "application/json" };
+			// First attempt: 401; retry succeeds after the refresh.
+			return calls === 1
+				? { status: 401, body: "unauthorized", contentType: "application/json" }
+				: { body: makeOpenAiCompletionsSSE("ok") };
 		},
 		async (baseUrl) => {
 			const model = makeModel(`${baseUrl}/v1`);
 			const stream = streamConsole(model, makeContext("hi"), {
-				accessToken: "sk-rejected-key",
-				serviceKey: true,
+				accessToken: "stale-token",
 				refreshSession: async () => {
 					refreshes++;
-					return { accessToken: "unused", serviceKey: true };
+					return { accessToken: "fresh-token" };
 				},
-			});
-			let error: string | undefined;
-			for await (const event of stream) {
-				if (event.type === "error") {
-					error = event.error.errorMessage;
-					break;
-				}
-			}
-			assert.match(error ?? "", /401|Unauthorized|error/i);
-			assert.equal(refreshes, 0);
-			assert.equal(calls, 1);
-		},
-	);
-});
-
-test("streamConsole omits org identity headers for service-key requests", async () => {
-	let header: string | undefined;
-	await withFakeServer(
-		(req) => {
-			header = req.headers["x-opencode-org-id"];
-			return { body: makeOpenAiCompletionsSSE("ok") };
-		},
-		async (baseUrl) => {
-			const model = makeModel(`${baseUrl}/v1`);
-			const stream = streamConsole(model, makeContext("hi"), {
-				accessToken: "sk-service-key",
-				serviceKey: true,
 			});
 			for await (const event of stream) {
 				if (event.type === "error") throw new Error("unexpected error: " + event.error.errorMessage);
 			}
-			assert.equal(header, undefined);
+			assert.equal(refreshes, 1);
+			assert.equal(calls, 2);
 		},
 	);
 });
@@ -412,6 +388,28 @@ test("streamConsole sends x-opencode-session from options.sessionId", async () =
 			assert.equal(session, "sess-123");
 		},
 	);
+});
+
+test("streamConsole routes wireApi models through the wrapper with a stripped baseUrl", async () => {
+	// pi delivers catalog models with the extension-level api (openai-completions)
+	// and the real gateway route in wireApi. The anthropic route must have its
+	// trailing /v1 stripped exactly once (no /v1/v1 double-prefix on the wire).
+	let requestPath: string | undefined;
+	await withFakeServer(
+		(req) => {
+			requestPath = req.url;
+			return { body: makeOpenAiCompletionsSSE("ok") };
+		},
+		async (baseUrl) => {
+			const model = makeModel(`${baseUrl}/inference/anthropic/v1`, "openai-completions");
+			(model as Model<Api> & { wireApi?: string }).wireApi = "anthropic-messages";
+			const stream = streamConsole(model, makeContext("hi"), { accessToken: "tok" });
+			for await (const _event of stream) {
+				/* drain — response body is not valid anthropic SSE; we only need the request */
+			}
+		},
+	);
+	assert.equal(requestPath, "/inference/anthropic/v1/messages");
 });
 
 test("streamConsole sends wireId instead of a disambiguated model id", async () => {
