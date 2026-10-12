@@ -79,11 +79,11 @@ test("status reports a device-code session for oauth credentials", async () => {
 		await handler("");
 	});
 	assert.equal(notifies.length, 1);
-	assert.match(notifies[0]!.message, /Auth: device-code session/);
+	assert.match(notifies[0]!.message, /Auth: device-code \(OAuth\) session/);
 	assert.match(notifies[0]!.message, /dev@example\.test/);
 });
 
-test("status reports and masks a stored service key", async () => {
+test("status treats a legacy service-key entry as signed out", async () => {
 	const { handler, notifies } = makeHarness();
 	await withAuthFile(
 		{ "opencode-console": { type: "api_key", key: "sk-abcdef0123456789abcdef0123456789" } },
@@ -91,9 +91,8 @@ test("status reports and masks a stored service key", async () => {
 			await handler("");
 		},
 	);
-	assert.equal(notifies.length, 1);
-	assert.match(notifies[0]!.message, /service key \(sk-abc…6789\)/);
-	assert.ok(!notifies[0]!.message.includes("sk-abcdef0123456789abcdef0123456789"), "full key must not be printed");
+	// Service-key auth was removed in 2.0: the entry is inert.
+	assert.match(notifies[0]!.message, /Not signed in/);
 });
 
 test("status warns when no credential is stored", async () => {
@@ -104,11 +103,19 @@ test("status warns when no credential is stored", async () => {
 	assert.match(notifies[0]!.message, /Not signed in/);
 });
 
-test("logout removes whichever credential type is stored", async () => {
+test("logout removes the stored credential (even a legacy service key)", async () => {
 	const { handler, notifies } = makeHarness();
 	let authAfterLogout: Record<string, unknown> | undefined;
 	await withAuthFile(
-		{ "opencode-console": { type: "api_key", key: "sk-logout-key-1234567890" } },
+		{
+			"opencode-console": {
+				type: "oauth",
+				refresh: "rt",
+				access: "at",
+				expires: Date.now() + 60 * 60_000,
+			},
+			"opencode-go-console": { type: "api_key", key: "sk-logout-key-1234567890" },
+		},
 		async () => {
 			const authPath = join(process.env.HOME!, ".pi", "agent", "auth.json");
 			await handler("logout");
@@ -118,9 +125,11 @@ test("logout removes whichever credential type is stored", async () => {
 	assert.match(notifies[0]!.message, /Signed out/);
 	assert.ok(authAfterLogout);
 	assert.ok(!("opencode-console" in authAfterLogout!));
+	// The go slot's legacy service key is untouched by a console logout.
+	assert.ok("opencode-go-console" in authAfterLogout!);
 });
 
-test("switch-org is rejected for service keys", async () => {
+test("switch-org treats a legacy service-key entry as signed out", async () => {
 	const { handler, notifies } = makeHarness();
 	await withAuthFile(
 		{ "opencode-console": { type: "api_key", key: "sk-org-key-1234567890" } },
@@ -129,31 +138,34 @@ test("switch-org is rejected for service keys", async () => {
 		},
 	);
 	assert.equal(notifies[0]!.level, "warning");
-	assert.match(notifies[0]!.message, /service keys are scoped/);
+	assert.match(notifies[0]!.message, /Not signed in/);
 });
 
-test("refresh with a service key loads the public /models catalog", async () => {
+test("switch-org is rejected for a server-scoped session", async () => {
 	const { handler, notifies } = makeHarness();
-	const prevFetch = globalThis.fetch;
-	globalThis.fetch = (async (input) => {
-		const url = String(input);
-		if (url.includes("models.dev")) return new Response("{}", { status: 200 });
-		return new Response(
-			JSON.stringify({ data: [{ id: "pub-1", name: "Pub" }] }),
-			{ status: 200 },
-		);
-	}) as typeof fetch;
-	try {
-		await withAuthFile(
-			{ "opencode-console": { type: "api_key", key: "sk-refresh-key-1234567890" } },
-			async () => {
-				await handler("refresh");
+	await withAuthFile(
+		{
+			"opencode-console": {
+				type: "oauth",
+				refresh: "rt",
+				access: "at",
+				expires: Date.now() + 60 * 60_000,
+				env: {
+					OPENCODE_CONSOLE_SERVER: "https://console.example.test",
+					OPENCODE_CONSOLE_ACCOUNT_ID: "acct",
+					OPENCODE_CONSOLE_EMAIL: "dev@example.test",
+					OPENCODE_CONSOLE_ORG_ID: "org-a",
+					OPENCODE_CONSOLE_ORG_NAME: "Alpha",
+					OPENCODE_CONSOLE_SCOPED_ORG_ID: "org-a",
+				},
 			},
-		);
-	} finally {
-		globalThis.fetch = prevFetch;
-	}
-	assert.match(notifies[0]!.message, /Found 1 models/);
+		},
+		async () => {
+			await handler("switch-org");
+		},
+	);
+	assert.equal(notifies[0]!.level, "warning");
+	assert.match(notifies[0]!.message, /scoped to the organization chosen at sign-in/);
 });
 // --- OpenCode Go command (opencode-go-console) ---
 
@@ -205,7 +217,7 @@ test("go status reports the shared console session", async () => {
 		await handler("");
 	});
 	assert.match(notifies[0]!.message, /OpenCode Go status/);
-	assert.match(notifies[0]!.message, /device-code session/);
+	assert.match(notifies[0]!.message, /device-code \(OAuth\) session/);
 	assert.match(notifies[0]!.message, /go@example\.test/);
 });
 
@@ -220,7 +232,12 @@ test("go logout preserves the console device session", async () => {
 				access: "at-console",
 				expires: Date.now() + 60 * 60_000,
 			},
-			"opencode-go-console": { type: "api_key", key: "sk-go-key-1234567890" },
+			"opencode-go-console": {
+				type: "oauth",
+				refresh: "rt-go",
+				access: "at-go",
+				expires: Date.now() + 60 * 60_000,
+			},
 		},
 		async () => {
 			const authPath = join(process.env.HOME!, ".pi", "agent", "auth.json");

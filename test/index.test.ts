@@ -82,12 +82,13 @@ test("extension registers the console and go providers", async () => {
 	assert.equal(pi.providers[0]!.name, "opencode-console");
 	assert.equal(pi.providers[1]!.name, "opencode-go-console");
 
-	for (const [idx, oauthName] of [[0, "OpenCode Console (device sign-in)"], [1, "OpenCode Go (device sign-in)"]] as const) {
+	for (const [idx, oauthName] of [[0, "OpenCode Console (OAuth device code)"], [1, "OpenCode Go (OAuth device code)"]] as const) {
 		const cfg = pi.providers[idx]!.config as CapturedConfig;
 		assert.equal(cfg.name, idx === 0 ? "OpenCode Console" : "OpenCode Go");
 		assert.deepEqual(cfg.models, []);
-		// API-key auth registered so pi's standard api_key entries resolve.
-		assert.equal(cfg.apiKey, "$OPENCODE_API_KEY");
+		// OAuth-only registration: no apiKey method, so pi's /login offers
+		// just the device-code path (no native "Enter API key" entry).
+		assert.equal(cfg.apiKey, undefined);
 		assert.ok(cfg.oauth);
 		assert.equal(cfg.oauth!.name, oauthName);
 		assert.equal(cfg.oauth!.isSubscription, true);
@@ -509,62 +510,9 @@ test("oauth.refreshToken returns refreshed credentials with env block", async ()
 	}
 });
 
-// --- service-key support ---
+// --- legacy service-key entries are inert (device-only auth) ---
 
-test("registration exposes API-key auth so service keys resolve", async () => {
-	const pi = makeFakePi();
-	providerFactory(cast(pi));
-	const cfg = pi.providers[0]!.config as { apiKey?: string };
-	assert.equal(cfg.apiKey, "$OPENCODE_API_KEY");
-});
-
-test("refreshModels loads the public /models catalog for an api_key credential", async () => {
-	const pi = makeFakePi();
-	providerFactory(cast(pi));
-	const provider = pi.providers[0]!;
-	const refreshModels = provider.config.refreshModels as (
-		ctx: {
-			signal?: AbortSignal;
-			credential?: unknown;
-			publish?: (p: { persist: unknown }) => Promise<boolean>;
-		},
-	) => Promise<Array<{ id: string }>>;
-
-	const calls: string[] = [];
-	const bearer: string[] = [];
-	const prevFetch = globalThis.fetch;
-	globalThis.fetch = (async (input, init) => {
-		const url = String(input);
-		calls.push(url);
-		if (url.includes("models.dev")) return new Response("{}", { status: 200 });
-		bearer.push(new Headers(init?.headers).get("authorization") ?? "");
-		return new Response(
-			JSON.stringify({
-				data: [{ id: "public-model", name: "Public", limit: { context: 128_000, output: 8_192 } }],
-			}),
-			{ status: 200 },
-		);
-	}) as typeof fetch;
-	try {
-		let published: { persist: unknown } | undefined;
-		const models = await refreshModels({
-			credential: { type: "api_key", key: "sk-index-key" },
-			publish: (p) => {
-				published = p;
-				return Promise.resolve(true);
-			},
-		});
-		assert.equal(models.length, 1);
-		assert.equal(models[0]!.id, "public-model");
-		assert.ok(calls[0]!.endsWith("/zen/v1/models"), calls[0]);
-		assert.equal(bearer[0], "Bearer sk-index-key");
-		assert.ok(published);
-	} finally {
-		globalThis.fetch = prevFetch;
-	}
-});
-
-test("streamSimple uses a stored service key without org identity", async () => {
+test("streamSimple rejects a legacy service-key-only auth.json", async () => {
 	const pi = makeFakePi();
 	providerFactory(cast(pi));
 	const provider = pi.providers[0]!;
@@ -574,60 +522,29 @@ test("streamSimple uses a stored service key without org identity", async () => 
 		options?: object,
 	) => AsyncIterable<{ type: string; error?: { errorMessage: string } }>;
 
-	const requests: { url: string; headers: Record<string, string> }[] = [];
-	const server = createServer((req, res) => {
-		let body = "";
-		req.on("data", (chunk) => (body += chunk.toString("utf8")));
-		req.on("end", () => {
-			requests.push({
-				url: req.url ?? "",
-				headers: Object.fromEntries(
-					Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : (v ?? "")]),
-				),
-			});
-			res.writeHead(200, { "content-type": "text/event-stream" });
-			res.end('data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"fake","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"cost":0}}\n\ndata: [DONE]\n\n');
-		});
-	});
-	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-	const port = (server.address() as AddressInfo).port;
-	const prevFetch = globalThis.fetch;
-	// Guard against accidental refresh traffic; pass localhost through so the
-	// fake streaming server still receives requests.
-	globalThis.fetch = (async (input, init) => {
-		const url = String(input);
-		if (!url.includes("127.0.0.1")) {
-			throw new Error("service keys must not refresh sessions");
-		}
-		return prevFetch(input as never, init as never);
-	}) as typeof fetch;
-	try {
-		await withAuthFile(
-			{ "opencode-console": { type: "api_key", key: "sk-stream-key-1234567890" } },
-			async () => {
-				const model = {
-					id: "m",
-					name: "M",
-					api: "openai-completions",
-					provider: "opencode-console",
-					reasoning: false,
-					input: ["text"],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					baseUrl: `http://127.0.0.1:${port}/v1`,
-				};
-				for await (const event of streamSimple(model, { systemPrompt: "x", messages: [] })) {
-					assert.ok(event.type !== "error");
+	const model = {
+		id: "m",
+		name: "M",
+		api: "openai-completions",
+		provider: "opencode-console",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		baseUrl: "http://127.0.0.1:9/v1",
+	};
+	await withAuthFile(
+		{ "opencode-console": { type: "api_key", key: "sk-stream-key-1234567890" } },
+		async () => {
+			let sawError = false;
+			for await (const event of streamSimple(model, { systemPrompt: "x", messages: [] })) {
+				if (event.type === "error") {
+					sawError = true;
+					assert.match(event.error!.errorMessage!, /Not signed in to OpenCode Console/);
 				}
-			},
-		);
-	} finally {
-		globalThis.fetch = prevFetch;
-		server.closeAllConnections();
-		await new Promise<void>((r) => server.close(() => r()));
-	}
-	assert.equal(requests.length, 1);
-	assert.equal(requests[0]!.headers["authorization"], "Bearer sk-stream-key-1234567890");
-	assert.equal(requests[0]!.headers["x-opencode-org-id"], undefined);
+			}
+			assert.ok(sawError, "expected a sign-in error for a legacy api_key entry");
+		},
+	);
 });
 
 // --- Go provider (opencode-go-console) ---
@@ -739,31 +656,21 @@ test("go refreshModels always loads the public Go /models catalog", async () => 
 		);
 	}) as typeof fetch;
 	try {
-		// api_key credential: Bearer service key.
-		const models = await refreshModels({
-			credential: { type: "api_key", key: "sk-go-key" },
-			publish: () => Promise.resolve(true),
-		});
-		assert.equal(models.length, 1);
-		assert.equal(models[0]!.id, "go-model");
-		assert.ok(urls[0]!.endsWith("/zen/go/v1/models"), urls[0]);
-		assert.equal(auths[0], "Bearer sk-go-key");
-
 		// oauth credential: Bearer console access token.
 		const out2 = await refreshModels({
 			credential: { type: "oauth", access: "at-x", refresh: "rt-x", expires: 9e15 },
 			publish: () => Promise.resolve(true),
 		});
 		assert.equal(out2.length, 1);
-		assert.ok(urls[1]!.endsWith("/zen/go/v1/models"), urls[1]);
-		assert.equal(auths[1], "Bearer at-x");
+		assert.ok(urls[0]!.endsWith("/zen/go/v1/models"), urls[0]);
+		assert.equal(auths[0], "Bearer at-x");
 
 		// No credential: anonymous catalog still resolves (auth-ignored).
 		const out3 = await refreshModels({
 			publish: () => Promise.resolve(true),
 		});
 		assert.equal(out3.length, 1);
-		assert.equal(auths[2], "");
+		assert.equal(auths[1], "");
 
 		// Offline phase: no network, no models.
 		urls.length = 0;
@@ -845,7 +752,7 @@ test("go streamSimple sends the session access token with x-org-id alias", async
 	assert.equal(requests[0]!.headers["x-org-id"], "org-go");
 });
 
-test("go streamSimple falls back to the console service key when no go entry exists", async () => {
+test("go streamSimple falls back to the console device session when no go entry exists", async () => {
 	const pi = makeFakePi();
 	providerFactory(cast(pi));
 	const goProvider = pi.providers[1]!;
@@ -872,7 +779,14 @@ test("go streamSimple falls back to the console service key when no go entry exi
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	try {
 		await withAuthFile(
-			{ "opencode-console": { type: "api_key", key: "sk-shared-key-1234567890" } },
+			{
+				"opencode-console": {
+					type: "oauth",
+					refresh: "rt",
+					access: "at-shared-session",
+					expires: Date.now() + 60 * 60_000,
+				},
+			},
 			async () => {
 				const model = {
 					id: "gm",
@@ -894,7 +808,7 @@ test("go streamSimple falls back to the console service key when no go entry exi
 		await new Promise<void>((r) => server.close(() => r()));
 	}
 	assert.equal(requests.length, 1);
-	assert.equal(requests[0]!.headers["authorization"], "Bearer sk-shared-key-1234567890");
+	assert.equal(requests[0]!.headers["authorization"], "Bearer at-shared-session");
 	assert.equal(requests[0]!.headers["x-opencode-org-id"], undefined);
 });
 

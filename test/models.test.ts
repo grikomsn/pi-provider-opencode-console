@@ -66,6 +66,27 @@ test("buildPiModels skips deprecated and disabled", () => {
 	assert.deepEqual(ids, ["claude-x", "gpt-y"]);
 });
 
+test("buildPiModels maps adaptive-Claude thinking when the catalog omits reasoning_options", () => {
+	const provider = {
+		claude: {
+			api: "https://api.example.test/v1",
+			models: {
+				"claude-fable-5-1": { name: "Fable", reasoning: true, limit: { context: 1_000_000, output: 128_000 } },
+				"gpt-z": { name: "GPT Z", reasoning: true, limit: { context: 128_000, output: 8_192 } },
+			},
+		},
+	};
+	const models = buildPiModels(new Map(Object.entries(provider)));
+	const claude = models.find((m) => m.id === "claude-fable-5-1")!;
+	assert.equal(claude.route, "anthropic-messages");
+	assert.equal(claude.thinkingLevelMap?.off, null);
+	assert.equal(claude.compat?.forceAdaptiveThinking, true);
+	// Non-Claude models keep the default (no invented thinking map).
+	const gpt = models.find((m) => m.id === "gpt-z")!;
+	assert.equal(gpt.thinkingLevelMap, undefined);
+	assert.equal(gpt.compat, undefined);
+});
+
 test("buildPiModels maps reasoning + image input + cost + context", () => {
 	const map = new Map(Object.entries(sampleConfig.config.provider));
 	const models = buildPiModels(map);
@@ -83,7 +104,8 @@ test("buildPiModels maps reasoning + image input + cost + context", () => {
 	const gpt = models.find((m) => m.id === "gpt-y")!;
 	assert.equal(gpt.reasoning, true);
 	assert.deepEqual(gpt.input, ["text"]);
-	assert.equal(gpt.api, "openai-responses");
+	assert.equal(gpt.route, "openai-responses");
+	assert.equal(gpt.api, "openai-completions");
 });
 
 test("buildPiModels uses model-level provider override", () => {
@@ -105,7 +127,8 @@ test("buildPiModels uses model-level provider override", () => {
 	const map = new Map(Object.entries(config.config.provider));
 	const models = buildPiModels(map);
 	assert.equal(models[0].baseUrl, "https://proxy.example.test/v1");
-	assert.equal(models[0].api, "anthropic-messages");
+	assert.equal(models[0].route, "anthropic-messages");
+	assert.equal(models[0].api, "openai-completions");
 });
 
 test("buildPiModels merges provider-level and model-level headers", () => {
@@ -188,7 +211,7 @@ test("toProviderModelConfigs maps all required fields", () => {
 	}
 });
 
-// --- public /models catalog (service keys + go mode) ---
+// --- public /models catalog (Go mode; token = the session's access token) ---
 
 const modelsDevPayload = {
 	opencode: {
@@ -249,6 +272,7 @@ test("loadPublicModels fetches the Console /models catalog with a Bearer key", a
 	// The synthetic provider carries the gateway base so string rows resolve.
 	assert.equal(entries[1]!.id, "string-row");
 	assert.equal(entries[1]!.baseUrl, CONSOLE_API_BASE_URL);
+	assert.equal(entries[1]!.route, "openai-completions");
 	assert.equal(entries[1]!.api, "openai-completions");
 });
 
@@ -340,7 +364,25 @@ test("loadPublicModels per-row provider.api overrides routing", async () => {
 	const providers = await loadPublicModels("console", "sk-k", fetcher);
 	const entries = buildPiModels(providers);
 	assert.equal(entries[0]!.baseUrl, "https://api.example.test/v1");
-	assert.equal(entries[0]!.api, "anthropic-messages");
+	assert.equal(entries[0]!.route, "anthropic-messages");
+	assert.equal(entries[0]!.api, "openai-completions");
+});
+
+test("toProviderModelConfigs flattens api and carries the wire route", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		const url = String(input);
+		if (url.includes("models.dev")) return new Response(JSON.stringify(modelsDevPayload), { status: 200 });
+		return new Response(
+			JSON.stringify({
+				data: [{ id: "special", name: "S", provider: { npm: "@anthropic-ai/sdk", api: "https://api.example.test/v1" } }],
+			}),
+			{ status: 200 },
+		);
+	};
+	const providers = await loadPublicModels("console", "sk-k", fetcher);
+	const configs = toProviderModelConfigs(buildPiModels(providers));
+	assert.equal(configs[0]!.api, "openai-completions");
+	assert.equal((configs[0] as unknown as Record<string, unknown>).wireApi, "anthropic-messages");
 });
 
 test("loadPublicModels non-200 throws", async () => {

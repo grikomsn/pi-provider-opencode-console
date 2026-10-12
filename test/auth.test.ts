@@ -80,6 +80,26 @@ test("requestDeviceCode parses response", async () => {
 	assert.equal(dc.intervalMs, 5000);
 });
 
+test("requestDeviceCode opts in to organization scoping", async () => {
+	let body: Record<string, unknown> | undefined;
+	const fetcher: typeof fetch = async (_input, init) => {
+		body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return new Response(
+			JSON.stringify({
+				device_code: "d",
+				user_code: "ABCD",
+				verification_uri_complete: "https://console.example.test/activate?code=ABCD",
+				expires_in: 600,
+				interval: 5,
+			}),
+			{ status: 200 },
+		);
+	};
+	await requestDeviceCode(SERVER, fetcher);
+	assert.equal(body?.supports_org_scope, true);
+	assert.equal(body?.client_id, "opencode-cli");
+});
+
 test("requestDeviceCode opens verification at opencode.ai/console/device", async () => {
 	const fetcher: typeof fetch = async (input) => {
 		assert.equal(String(input), "https://opencode.ai/console/auth/device/code");
@@ -154,8 +174,92 @@ test("completeDeviceSignIn polls past authorization_pending", async () => {
 	const session = await completeDeviceSignIn(device, { fetcher, sleep: async () => {} });
 	assert.equal(session.accountId, "u1");
 	assert.equal(session.email, "u@example.test");
-	assert.equal(session.orgId, "org-1"); // sorted alphabetically
+	// Multi-org account without a server scope: no silent first-org pin —
+	// the login flow prompts for an explicit pick when orgId is unset.
+	assert.equal(session.orgId, undefined);
+	assert.equal(session.orgName, undefined);
+	assert.equal(session.scopedOrgId, undefined);
+});
+
+test("completeDeviceSignIn honors a server-scoped org grant", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		const url = String(input);
+		if (url.endsWith("/auth/device/token")) {
+			return new Response(
+				JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600, org_id: "org-1" }),
+				{ status: 200 },
+			);
+		}
+		if (url.endsWith("/api/user")) return new Response(JSON.stringify({ id: "u1", email: "u@example.test" }));
+		if (url.endsWith("/api/orgs"))
+			return new Response(JSON.stringify([{ id: "org-2", name: "Beta" }, { id: "org-1", name: "Alpha" }]));
+		throw new Error("unexpected url: " + url);
+	};
+	const device = {
+		deviceCode: "d",
+		userCode: "ABCD",
+		verificationUrl: "https://x",
+		expiresAt: Date.now() + 60_000,
+		intervalMs: 1,
+		server: SERVER,
+	};
+	const session = await completeDeviceSignIn(device, { fetcher, sleep: async () => {} });
+	assert.equal(session.orgId, "org-1");
 	assert.equal(session.orgName, "Alpha");
+	assert.equal(session.scopedOrgId, "org-1");
+});
+
+test("completeDeviceSignIn fails on an unknown granted org", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		const url = String(input);
+		if (url.endsWith("/auth/device/token")) {
+			return new Response(
+				JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600, org_id: "org-x" }),
+				{ status: 200 },
+			);
+		}
+		if (url.endsWith("/api/user")) return new Response(JSON.stringify({ id: "u1", email: "u@example.test" }));
+		if (url.endsWith("/api/orgs")) return new Response(JSON.stringify([{ id: "org-1", name: "Alpha" }]));
+		throw new Error("unexpected url: " + url);
+	};
+	const device = {
+		deviceCode: "d",
+		userCode: "ABCD",
+		verificationUrl: "https://x",
+		expiresAt: Date.now() + 60_000,
+		intervalMs: 1,
+		server: SERVER,
+	};
+	await assert.rejects(
+		completeDeviceSignIn(device, { fetcher, sleep: async () => {} }),
+		/granted a session for an unavailable organization/,
+	);
+});
+
+test("completeDeviceSignIn auto-selects a single-org account without a grant", async () => {
+	const fetcher: typeof fetch = async (input) => {
+		const url = String(input);
+		if (url.endsWith("/auth/device/token")) {
+			return new Response(JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600 }), {
+				status: 200,
+			});
+		}
+		if (url.endsWith("/api/user")) return new Response(JSON.stringify({ id: "u1", email: "u@example.test" }));
+		if (url.endsWith("/api/orgs")) return new Response(JSON.stringify([{ id: "org-1", name: "Alpha" }]));
+		throw new Error("unexpected url: " + url);
+	};
+	const device = {
+		deviceCode: "d",
+		userCode: "ABCD",
+		verificationUrl: "https://x",
+		expiresAt: Date.now() + 60_000,
+		intervalMs: 1,
+		server: SERVER,
+	};
+	const session = await completeDeviceSignIn(device, { fetcher, sleep: async () => {} });
+	assert.equal(session.orgId, "org-1");
+	assert.equal(session.orgName, "Alpha");
+	assert.equal(session.scopedOrgId, undefined);
 });
 
 test("completeDeviceSignIn handles slow_down", async () => {
@@ -221,6 +325,61 @@ test("refreshSession rotates tokens", async () => {
 	assert.equal(next.accessToken, "new-at");
 	assert.equal(next.refreshToken, "new-rt");
 	assert.ok(next.expiresAt > Date.now() + 7000_000);
+});
+
+test("refreshSession keeps a scoped session's org and rejects scope changes", async () => {
+	const base = {
+		server: SERVER,
+		accessToken: "old",
+		refreshToken: "rt",
+		expiresAt: Date.now() - 1000,
+		accountId: "a",
+		email: "e",
+		orgs: [{ id: "org-1", name: "Alpha" }, { id: "org-2", name: "Beta" }],
+		orgId: "org-1",
+		orgName: "Alpha",
+		scopedOrgId: "org-1",
+	};
+	// Omitted org_id keeps the scope.
+	const kept = await refreshSession(
+		base,
+		async () => new Response(JSON.stringify({ access_token: "new", refresh_token: "rt2", expires_in: 3600 }), { status: 200 }),
+	);
+	assert.equal(kept.orgId, "org-1");
+	assert.equal(kept.scopedOrgId, "org-1");
+	// Same org_id keeps the scope.
+	const same = await refreshSession(
+		base,
+		async () => new Response(JSON.stringify({ access_token: "new", refresh_token: "rt2", expires_in: 3600, org_id: "org-1" }), { status: 200 }),
+	);
+	assert.equal(same.orgId, "org-1");
+	// A different org_id is a hard error.
+	await assert.rejects(
+		refreshSession(
+			base,
+			async () => new Response(JSON.stringify({ access_token: "new", refresh_token: "rt2", expires_in: 3600, org_id: "org-2" }), { status: 200 }),
+		),
+		/changed the session's organization scope/,
+	);
+});
+
+test("refreshSession adopts a granted org on an un-scoped session", async () => {
+	const base = {
+		server: SERVER,
+		accessToken: "old",
+		refreshToken: "rt",
+		expiresAt: Date.now() - 1000,
+		accountId: "a",
+		email: "e",
+		orgs: [{ id: "org-1", name: "Alpha" }, { id: "org-2", name: "Beta" }],
+	};
+	const refreshed = await refreshSession(
+		base,
+		async () => new Response(JSON.stringify({ access_token: "new", refresh_token: "rt2", expires_in: 3600, org_id: "org-2" }), { status: 200 }),
+	);
+	assert.equal(refreshed.orgId, "org-2");
+	assert.equal(refreshed.orgName, "Beta");
+	assert.equal(refreshed.scopedOrgId, undefined);
 });
 
 test("ensureFreshSession is single-flight", async () => {
@@ -294,6 +453,7 @@ test("saveSession persists the org list and loadSession restores it", async () =
 				orgs: [],
 				orgId: "org-a",
 				orgName: "Alpha",
+				scopedOrgId: "org-a",
 			},
 			orgs,
 		);
@@ -302,6 +462,8 @@ test("saveSession persists the org list and loadSession restores it", async () =
 		assert.deepEqual(loaded.orgs, sortedOrgs);
 		assert.equal(loaded.orgId, "org-a");
 		assert.equal(loaded.orgName, "Alpha");
+		// Server-scoped org survives the auth.json round-trip.
+		assert.equal(loaded.scopedOrgId, "org-a");
 
 		// envForSession without fetchedOrgs keeps the carried-over org list.
 		const env = envForSession(loaded);
@@ -322,15 +484,13 @@ test("saveSession persists the org list and loadSession restores it", async () =
 	}
 });
 
-// --- service-key (api_key credential) support ---
+// --- device-only credential resolution (legacy api_key entries are ignored) ---
 
 import {
 	deleteSession,
 	loadCredential,
 	mirrorOAuthTokens,
-	summarizeKey,
 	GO_PROVIDER_ID,
-	type ApiKeyStoredCredential,
 	type OAuthStoredCredential,
 } from "../src/auth.ts";
 
@@ -355,21 +515,11 @@ async function withFakeHome(
 	}
 }
 
-test("loadCredential resolves a stored service key (api_key entry)", async () => {
+test("loadCredential ignores a legacy api_key (service key) entry", async () => {
 	await withFakeHome(
-		{ [PROVIDER_ID]: { type: "api_key", key: "  sk-testkey-abcdef0123456789  " } },
+		{ [PROVIDER_ID]: { type: "api_key", key: "sk-testkey-abcdef0123456789" } },
 		async () => {
-			const cred = (await loadCredential()) as ApiKeyStoredCredential;
-			assert.equal(cred.kind, "api_key");
-			assert.equal(cred.key, "sk-testkey-abcdef0123456789");
-		},
-	);
-});
-
-test("loadCredential treats an empty api_key entry as missing", async () => {
-	await withFakeHome(
-		{ [PROVIDER_ID]: { type: "api_key", key: "   " } },
-		async () => {
+			// Service-key auth was removed in 2.0: the entry is inert.
 			assert.equal(await loadCredential(), undefined);
 		},
 	);
@@ -417,12 +567,12 @@ test("loadCredential rebuilds the oauth session entry", async () => {
 test("loadCredential and deleteSession are per-provider-id", async () => {
 	await withFakeHome(
 		{
-			[PROVIDER_ID]: { type: "api_key", key: "sk-console-key-0001" },
-			[GO_PROVIDER_ID]: { type: "oauth", refresh: "rt", access: "at", expires: Date.now() + 60 * 60_000 },
+			[PROVIDER_ID]: { type: "oauth", refresh: "rt", access: "at", expires: Date.now() + 60 * 60_000 },
+			[GO_PROVIDER_ID]: { type: "oauth", refresh: "rt-go", access: "at-go", expires: Date.now() + 60 * 60_000 },
 		},
 		async () => {
-			const consoleCred = (await loadCredential()) as ApiKeyStoredCredential;
-			assert.equal(consoleCred.kind, "api_key");
+			const consoleCred = (await loadCredential()) as OAuthStoredCredential;
+			assert.equal(consoleCred.kind, "oauth");
 			const goCred = (await loadCredential(GO_PROVIDER_ID)) as OAuthStoredCredential;
 			assert.equal(goCred.kind, "oauth");
 			await deleteSession(PROVIDER_ID);
@@ -436,11 +586,6 @@ test("loadCredential ignores unknown entry types", async () => {
 	await withFakeHome({ [PROVIDER_ID]: { type: "wellknown", key: "x", token: "y" } }, async () => {
 		assert.equal(await loadCredential(), undefined);
 	});
-});
-
-test("summarizeKey masks service keys", () => {
-	assert.equal(summarizeKey("sk-abcdef0123456789abcdef0123456789"), "sk-abc…6789");
-	assert.equal(summarizeKey("sk-short"), "sk-…");
 });
 
 test("mirrorOAuthTokens rotates the sibling oauth entry (tokens + env)", async () => {
@@ -481,7 +626,7 @@ test("mirrorOAuthTokens rotates the sibling oauth entry (tokens + env)", async (
 	);
 });
 
-test("mirrorOAuthTokens skips missing and api-key siblings", async () => {
+test("mirrorOAuthTokens skips missing and non-oauth siblings", async () => {
 	await withFakeHome(
 		{ [PROVIDER_ID]: { type: "oauth", refresh: "rt", access: "at", expires: 1 } },
 		async () => {
@@ -497,7 +642,7 @@ test("mirrorOAuthTokens skips missing and api-key siblings", async () => {
 			// Missing sibling: no entry created, no throw.
 			await mirrorOAuthTokens(session, PROVIDER_ID, "nonexistent");
 			assert.equal(await loadCredential("nonexistent"), undefined);
-			// Service-key sibling: untouched.
+			// Non-oauth sibling (legacy api_key shape): untouched.
 			// (Write an api_key entry, mirror, verify it stays.)
 			const raw = await readFile(join(process.env.HOME!, ".pi", "agent", "auth.json"), "utf8");
 			const auth = JSON.parse(raw) as Record<string, Record<string, unknown>>;

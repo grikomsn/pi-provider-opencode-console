@@ -53,6 +53,8 @@ export interface ConsoleSession {
 	orgs: ConsoleOrg[];
 	orgId?: string;
 	orgName?: string;
+	/** Organization bound by the server's device grant when sign-in requested org scope. */
+	scopedOrgId?: string;
 }
 
 export interface DeviceCode {
@@ -179,7 +181,11 @@ export async function requestDeviceCode(
 	const response = await fetcher(`${normalized}/auth/device/code`, {
 		method: "POST",
 		headers: { Accept: "application/json", "Content-Type": "application/json" },
-		body: JSON.stringify({ client_id: OPENCODE_CLIENT_ID }),
+		// Opt in to organization scoping: the Console browser authorization page
+		// binds the grant to the organization chosen during approval, returned
+		// as org_id at token exchange. Servers that ignore the flag behave as
+		// before (sister parity: opencode-copilot-chat #66, tanstack adapter).
+		body: JSON.stringify({ client_id: OPENCODE_CLIENT_ID, supports_org_scope: true }),
 	});
 	if (!response.ok) {
 		throw new Error(`OpenCode Console device authorization failed (${response.status})`);
@@ -252,6 +258,16 @@ export async function completeDeviceSignIn(
 			throw new Error("OpenCode Console returned incomplete account information");
 		}
 		const orgs = normalizeOrgs(orgsRaw);
+		// A server-scoped grant (org_id at token exchange) pins the session to
+		// the organization chosen during browser authorization. Un-scoped
+		// single-org accounts self-select; multi-org accounts pick explicitly
+		// (the login flow prompts when orgId is unset) — no silent first-org pin.
+		const grantedOrgId = stringField(value, "org_id");
+		const scopedOrg = grantedOrgId ? orgs.find((o) => o.id === grantedOrgId) : undefined;
+		if (grantedOrgId && !scopedOrg) {
+			throw new Error("OpenCode Console granted a session for an unavailable organization");
+		}
+		const selected = scopedOrg ?? (orgs.length === 1 ? orgs[0] : undefined);
 		return {
 			server: device.server,
 			accessToken,
@@ -260,7 +276,8 @@ export async function completeDeviceSignIn(
 			accountId,
 			email,
 			orgs,
-			...(orgs[0] ? { orgId: orgs[0].id, orgName: orgs[0].name } : {}),
+			...(selected ? { orgId: selected.id, orgName: selected.name } : {}),
+			...(scopedOrg ? { scopedOrgId: scopedOrg.id } : {}),
 		};
 	}
 	throw new Error("OpenCode Console device code expired; start sign-in again");
@@ -286,11 +303,21 @@ export async function refreshSession(
 	const accessToken = stringField(value, "access_token");
 	const newRefresh = stringField(value, "refresh_token") ?? session.refreshToken;
 	if (!accessToken) throw new Error("OpenCode Console token refresh returned no access token");
+	// Honor organization scoping across refreshes (sister parity): a scoped
+	// session keeps its org — a server response that changes it is a hard
+	// error; an omitted org_id keeps the current one; a fresh org_id on an
+	// un-scoped session is adopted.
+	const refreshedOrgId = stringField(value, "org_id");
+	if (session.scopedOrgId && refreshedOrgId && refreshedOrgId !== session.scopedOrgId) {
+		throw new Error("OpenCode Console refresh changed the session's organization scope; sign in again");
+	}
+	const refreshedOrg = refreshedOrgId ? session.orgs.find((o) => o.id === refreshedOrgId) : undefined;
 	return {
 		...session,
 		accessToken,
 		refreshToken: newRefresh,
 		expiresAt: Date.now() + positiveNumber(value, "expires_in", 3600) * 1000,
+		...(refreshedOrg ? { orgId: refreshedOrg.id, orgName: refreshedOrg.name } : {}),
 	};
 }
 
@@ -324,14 +351,7 @@ interface OAuthJsonEntry {
 	env?: Record<string, string>;
 }
 
-/** Stored api-key credential entries (pi's canonical service-key shape). */
-interface ApiKeyJsonEntry {
-	type: "api_key";
-	key?: string;
-	env?: Record<string, string>;
-}
-
-type AuthJsonEntry = OAuthJsonEntry | ApiKeyJsonEntry;
+type AuthJsonEntry = OAuthJsonEntry;
 
 interface AuthJson {
 	[providerId: string]: AuthJsonEntry | undefined;
@@ -378,6 +398,7 @@ function sessionFromEntry(entry: OAuthJsonEntry): ConsoleSession | undefined {
 		orgs,
 		...(env.OPENCODE_CONSOLE_ORG_ID ? { orgId: env.OPENCODE_CONSOLE_ORG_ID } : {}),
 		...(env.OPENCODE_CONSOLE_ORG_NAME ? { orgName: env.OPENCODE_CONSOLE_ORG_NAME } : {}),
+		...(env.OPENCODE_CONSOLE_SCOPED_ORG_ID ? { scopedOrgId: env.OPENCODE_CONSOLE_SCOPED_ORG_ID } : {}),
 	};
 }
 
@@ -385,50 +406,24 @@ export async function loadSession(providerId: string = PROVIDER_ID): Promise<Con
 	return (await loadCredential(providerId) as OAuthStoredCredential | undefined)?.session;
 }
 
-/** Service key resolved from a stored `api_key` entry. */
-export interface ApiKeyStoredCredential {
-	kind: "api_key";
-	key: string;
-}
 /** Device-flow session rebuilt from a stored `oauth` entry. */
 export interface OAuthStoredCredential {
 	kind: "oauth";
 	session: ConsoleSession;
 }
-export type StoredCredential = ApiKeyStoredCredential | OAuthStoredCredential;
-
-/**
- * Resolve a stored service-key value: whole-string `$VAR` / `${VAR}`
- * templates are resolved from the environment (matching pi's read-time
- * template resolution for `api_key` entries); anything else is literal.
- * Shell-command forms (`!cmd`) are not supported by this direct reader.
- */
-function resolveApiKeyEntry(raw: string | undefined): string | undefined {
-	const value = raw?.trim();
-	if (!value) return undefined;
-	const template = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$|^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-	if (template) {
-		const name = template[1] ?? template[2]!;
-		return process.env[name] || undefined;
-	}
-	return value;
-}
+export type StoredCredential = OAuthStoredCredential;
 
 /**
  * Read the provider's auth.json entry (direct file access so commands and
- * stream wrappers share one view of *which* credential type is stored).
- * Service keys (`type: "api_key"`) and device-flow sessions
- * (`type: "oauth"`) are mutually exclusive per provider id — pi's runtime
- * stores exactly one credential per provider id.
+ * stream wrappers share one view of the stored credential). Only
+ * device-code sessions (`type: "oauth"`) are supported — legacy
+ * `{ type: "api_key" }` entries are ignored (the provider registers no
+ * API-key method, so pi's runtime refuses to resolve them).
  */
 export async function loadCredential(providerId: string = PROVIDER_ID): Promise<StoredCredential | undefined> {
 	const auth = await readAuthJson();
 	const entry = auth[providerId];
 	if (!entry) return undefined;
-	if (entry.type === "api_key") {
-		const key = resolveApiKeyEntry(entry.key);
-		return key ? { kind: "api_key", key } : undefined;
-	}
 	if (entry.type === "oauth") {
 		const session = sessionFromEntry(entry);
 		return session ? { kind: "oauth", session } : undefined;
@@ -453,6 +448,7 @@ export function envForSession(
 	};
 	if (session.orgId) env.OPENCODE_CONSOLE_ORG_ID = session.orgId;
 	if (session.orgName) env.OPENCODE_CONSOLE_ORG_NAME = session.orgName;
+	if (session.scopedOrgId) env.OPENCODE_CONSOLE_SCOPED_ORG_ID = session.scopedOrgId;
 	// Persist the org list so `/opencode-console switch-org` survives a
 	// restart; `fetchedOrgs` (freshly fetched) takes precedence over the
 	// session's carried-over list.
@@ -483,18 +479,13 @@ export async function deleteSession(providerId: string = PROVIDER_ID): Promise<v
 	await writeAuthJson(auth);
 }
 
-/** Masked rendering for command status output — never expose the full key. */
-export function summarizeKey(key: string): string {
-	return key.length <= 12 ? "sk-…" : `${key.slice(0, 6)}…${key.slice(-4)}`;
-}
-
 /**
  * Copy the shared Console device-flow session's rotated token fields into
  * the sibling provider's oauth entry (when present and oauth-typed) after a
  * canonical refresh, so refresh-token rotation keeps both provider entries
  * valid. Only the token fields are mirrored: each entry keeps its own `env`,
  * so a per-provider organization choice survives a sibling's refresh.
- * Service-key entries and missing entries are left untouched.
+ * Entries of any other shape and missing entries are left untouched.
  */
 export async function mirrorOAuthTokens(
 	session: ConsoleSession,
