@@ -11,9 +11,11 @@
  *     strip it because the Anthropic SDK appends `/v1/messages` itself.
  *   - `openai-completions` / `openai-responses`: keep baseUrl (typically
  *     already `/v1`); SDK appends `chat/completions` or `responses`.
- *   - `google-generative-ai`: keep baseUrl (the Google AI SDK expects
+ *   - `google-generative-ai`: use a protocol-specific base (the Google AI SDK expects
  *     the API root, e.g. `/v1beta`, and adds `/models/<id>:
  *     streamGenerateContent` itself).
+ * Generic OpenCode catalog bases are first resolved to `/inference` routes;
+ * the legacy Go gateway has no Google-compatible inference route.
  */
 
 export type ApiKind =
@@ -60,16 +62,13 @@ export function resolveRoute(modelId: string, npm?: string, mode: OpenCodeMode =
 	// Family-wide routes (sibling parity): every live grok*, muse-spark* and
 	// qwen* model on the gateways is responses or messages, and models.dev
 	// omits `npm` for some of them — the id prefix is the only signal left.
-	// Family-scoped: minimax and gemini only appear on their own gateway.
 	if (/^grok(?:-|$)/i.test(modelId)) return "openai-responses";
 	if (/^muse-spark-/i.test(modelId)) return "openai-responses";
-	// The endpoint table gives this model a different API from other Qwen
-	// models: it is OpenAI-completions on both gateways (pi's official config
-	// agrees; tanstack router + pi.dev pages corroborate).
-	if (/^qwen3\.8-max$/i.test(modelId)) return "openai-completions";
+	// This model uses Completions on Console and Messages on Go.
+	if (/^qwen-?3\.8-max$/i.test(modelId)) return mode === "go" ? "anthropic-messages" : "openai-completions";
 	if (/^qwen/i.test(modelId)) return "anthropic-messages";
 	if (mode === "go" && /^minimax-/i.test(modelId)) return "anthropic-messages";
-	if (mode === "console" && /^gemini-/i.test(modelId)) return "google-generative-ai";
+	if (/^gemini-/i.test(modelId)) return "google-generative-ai";
 	return "openai-completions";
 }
 
@@ -104,7 +103,12 @@ export function routeFor(api: ApiKind): RouteInfo {
  * after the SDK appends its own path, we hit the correct endpoint.
  */
 export function baseUrlFor(baseUrl: string, api: ApiKind): string {
-	const stripped = baseUrl.replace(/\/+$/, "");
+	let stripped = baseUrl.replace(/\/+$/, "");
+	const gateway = /^https:\/\/opencode\.ai\/(?:zen|inference)(\/go)?\/v1$/.exec(stripped);
+	if (gateway) {
+		const protocol = api === "google-generative-ai" ? "google/v1beta" : api === "anthropic-messages" ? "anthropic/v1" : "openai/v1";
+		stripped = `https://opencode.ai/inference${gateway[1] ?? ""}/${protocol}`;
+	}
 	if (api === "anthropic-messages") {
 		// Anthropic SDK appends /v1/messages → baseUrl should NOT include /v1.
 		return stripped.replace(/\/v1$/, "");

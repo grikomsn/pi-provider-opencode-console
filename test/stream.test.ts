@@ -10,6 +10,8 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { streamConsole } from "../src/stream.ts";
+import { buildPiModels, toProviderModelConfigs } from "../src/models.ts";
+import { baseUrlFor, GO_API_BASE_URL } from "../src/endpoint.ts";
 
 interface CapturedRequest {
 	method?: string;
@@ -200,6 +202,36 @@ test("streamConsole routes google-generative-ai URLs correctly", async () => {
 			assert.equal(captured[0]!.headers["x-goog-api-key"], "tok");
 		},
 	);
+});
+
+test("streams a discovered Go Gemini model through pi's Google SDK", async () => {
+	let captured: CapturedRequest | undefined;
+	await withFakeServer((req) => {
+		captured = req;
+		return { body: `data: ${JSON.stringify({
+			candidates: [{ content: { role: "model", parts: [{ text: "ROUTE_OK" }] }, finishReason: "STOP" }],
+			usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 1, totalTokenCount: 3 },
+		})}\n\n` };
+	}, async (origin) => {
+		const [built] = buildPiModels(new Map([["opencode-go", {
+			api: GO_API_BASE_URL,
+			models: { "gemini-4-argon-contributor": { provider: { npm: "@ai-sdk/google" } } },
+		}]]), "go");
+		const [config] = toProviderModelConfigs([built!]);
+		const model = {
+			...config,
+			provider: "opencode-go-console",
+			baseUrl: baseUrlFor(built!.baseUrl, built!.route).replace("https://opencode.ai", origin),
+		} as Model<Api>;
+		const events = [];
+		for await (const event of streamConsole(model, makeContext("hi"), { accessToken: "test-token" })) events.push(event);
+		assert.equal(events.at(-1)?.type, "done");
+		assert.ok(events.some((event) => event.type === "text_delta" && event.delta === "ROUTE_OK"));
+		assert.equal(captured?.url, "/inference/go/google/v1beta/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse");
+		assert.equal(captured?.headers["x-goog-api-key"], "test-token");
+		assert.ok(captured?.headers["x-opencode-session"]);
+		assert.ok(JSON.parse(captured!.body).contents);
+	});
 });
 
 test("streamConsole retries a transient 503 and succeeds", async () => {

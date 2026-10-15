@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildPiModels, loadConsoleConfig, loadPublicModels, resetModelsDevCacheForTests, toProviderModelConfigs, type ProviderSource } from "../src/models.ts";
-import { apiBaseForMode, CONSOLE_API_BASE_URL, GO_API_BASE_URL } from "../src/endpoint.ts";
+import { apiBaseForMode, baseUrlFor, CONSOLE_API_BASE_URL, GO_API_BASE_URL } from "../src/endpoint.ts";
 
 const sampleConfig = {
 	config: {
@@ -225,6 +225,26 @@ const modelsDevPayload = {
 		},
 	},
 };
+
+test("Go Gemini discovery resolves Google with fresh, missing, or unavailable metadata", async () => {
+	for (const metadata of [
+		{ "opencode-go": { npm: "@ai-sdk/openai-compatible", models: { "gemini-4-argon-contributor": { provider: { npm: "@ai-sdk/google" } } } } },
+		{ "opencode-go": { models: {} } },
+		undefined,
+	]) {
+		resetModelsDevCacheForTests();
+		const fetcher: typeof fetch = async (input) => String(input).includes("models.dev")
+			? metadata ? Response.json(metadata) : new Response("unavailable", { status: 503 })
+			: Response.json({ data: [{ id: "gemini-4-argon-contributor" }] });
+		const providers = await loadPublicModels("go", undefined, fetcher);
+		const [model] = buildPiModels(providers, "go");
+		assert.equal(model!.route, "google-generative-ai");
+		assert.equal(baseUrlFor(model!.baseUrl, model!.route), "https://opencode.ai/inference/go/google/v1beta");
+		const [config] = toProviderModelConfigs([model!]);
+		assert.equal((config as unknown as { wireApi: string }).wireApi, "google-generative-ai");
+	}
+	resetModelsDevCacheForTests();
+});
 
 /** Builds a fetcher that serves the mode gateways and models.dev by URL. */
 function routingFetcher(routes: { match: string; response: () => unknown; status?: number }[]) {
