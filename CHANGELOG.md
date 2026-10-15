@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1
+
+### Patch Changes
+
+- 3b7795e: Resolve model protocols and canonical OpenCode inference URLs, including Gemini on Go and Qwen3.8 Max. Respect PI_CODING_AGENT_DIR for isolated session storage.
+
 ## 2.0.0
 
 ### Major Changes
