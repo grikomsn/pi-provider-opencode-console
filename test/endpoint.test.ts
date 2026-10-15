@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveRoute, routeFor, baseUrlFor } from "../src/endpoint.ts";
+import { apiBaseForMode, resolveRoute, routeFor, baseUrlFor } from "../src/endpoint.ts";
+
+test("public catalogs use the canonical inference bases", () => {
+	assert.equal(apiBaseForMode("console"), "https://opencode.ai/inference/v1");
+	assert.equal(apiBaseForMode("go"), "https://opencode.ai/inference/go/v1");
+});
 
 test("resolveRoute by npm package", () => {
 	assert.equal(resolveRoute("foo", "@ai-sdk/anthropic"), "anthropic-messages");
@@ -67,6 +72,7 @@ test("resolveRoute family heuristics (sibling parity)", () => {
 	// Mode-scoped families.
 	assert.equal(resolveRoute("minimax-m3", "", "go"), "anthropic-messages");
 	assert.equal(resolveRoute("minimax-m3", "", "console"), "openai-completions");
+	assert.equal(resolveRoute("minimax-m3-free", "@ai-sdk/anthropic", "console"), "anthropic-messages");
 	assert.equal(resolveRoute("gemini-3-pro", "", "console"), "google-generative-ai");
 	assert.equal(resolveRoute("gemini-4-argon-contributor", "", "go"), "google-generative-ai");
 	// npm wins over id heuristics.
@@ -101,4 +107,5 @@ test("baseUrlFor resolves generic OpenCode gateways before SDK path composition"
 	}
 	assert.equal(baseUrlFor("https://opencode.ai/inference/go/google/v1beta/", "google-generative-ai"), "https://opencode.ai/inference/go/google/v1beta");
 	assert.equal(baseUrlFor("https://custom.test/zen/go/v1", "google-generative-ai"), "https://custom.test/zen/go/v1");
+	assert.equal(baseUrlFor("https://opencode.ai.example.test/inference/v1", "google-generative-ai"), "https://opencode.ai.example.test/inference/v1");
 });

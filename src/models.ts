@@ -1,7 +1,7 @@
 /**
  * Loads model catalogs from OpenCode Console `/api/config` (org-scoped,
  * device sessions) plus the public `/models` catalogs of the Console
- * (`https://opencode.ai/zen/v1`) and Go (`https://opencode.ai/zen/go/v1`)
+ * (`https://opencode.ai/inference/v1`) and Go (`https://opencode.ai/inference/go/v1`)
  * gateways (Go mode, called with the session's access token), and projects
  * them to pi's `ProviderModelConfig` shape.
  */
@@ -343,8 +343,8 @@ function fillFromModelsDev(live: ModelConfigSource, dev?: ModelConfigSource): Mo
 
 /**
  * Load the public (or workspace-scoped) `/models` catalog for a gateway
- * mode: `https://opencode.ai/zen/v1/models` (Console, `full`) or
- * `https://opencode.ai/zen/go/v1/models` (Go, `lite`, auth-ignored).
+ * mode: `https://opencode.ai/inference/v1/models` (Console, `full`) or
+ * `https://opencode.ai/inference/go/v1/models` (Go, `lite`, auth-ignored).
  * Without a token the catalog is fully public; with one it is Bearer-authed
  * (workspace-disabled models are filtered server-side). Payload shape:
  * `{ data: [ModelSource-like rows] }` with string-only ids permitted.

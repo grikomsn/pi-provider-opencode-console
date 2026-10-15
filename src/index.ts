@@ -11,7 +11,7 @@
  *   device-code sign-in path and stored `api_key` auth.json entries no
  *   longer resolve.
  * - Console: org-scoped `/api/config` catalog.
- * - Go: always the public `https://opencode.ai/zen/go/v1/models` catalog
+ * - Go: always the public `https://opencode.ai/inference/go/v1/models` catalog
  *   (`lite` list), called with the session's access token; requests go to
  *   the Go gateway.
  * - The stored oauth credential owns the provider (pi's
