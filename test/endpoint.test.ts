@@ -68,7 +68,7 @@ test("resolveRoute family heuristics (sibling parity)", () => {
 	assert.equal(resolveRoute("minimax-m3", "", "go"), "anthropic-messages");
 	assert.equal(resolveRoute("minimax-m3", "", "console"), "openai-completions");
 	assert.equal(resolveRoute("gemini-3-pro", "", "console"), "google-generative-ai");
-	assert.equal(resolveRoute("gemini-3-pro", "", "go"), "openai-completions");
+	assert.equal(resolveRoute("gemini-4-argon-contributor", "", "go"), "google-generative-ai");
 	// npm wins over id heuristics.
 	assert.equal(resolveRoute("grok-3", "@ai-sdk/anthropic"), "anthropic-messages");
 	// Explicit npm packages keep their mapping.
@@ -78,11 +78,27 @@ test("resolveRoute family heuristics (sibling parity)", () => {
 	assert.equal(resolveRoute("claude-fable-5", ""), "anthropic-messages");
 });
 
-test("resolveRoute qwen3.8-max exact exception routes to completions on both gateways", () => {
+test("resolveRoute qwen3.8-max uses the gateway-specific protocol", () => {
 	assert.equal(resolveRoute("qwen3.8-max", ""), "openai-completions");
-	assert.equal(resolveRoute("qwen3.8-max", "", "go"), "openai-completions");
+	assert.equal(resolveRoute("qwen3.8-max", "", "go"), "anthropic-messages");
+	assert.equal(resolveRoute("qwen-3.8-max", "", "go"), "anthropic-messages");
+	assert.equal(resolveRoute("qwen-3.8-max", ""), "openai-completions");
 	assert.equal(resolveRoute("Qwen3.8-Max", ""), "openai-completions");
 	// Other qwen tiers keep the messages family route.
 	assert.equal(resolveRoute("qwen3.8-flash", ""), "anthropic-messages");
 	assert.equal(resolveRoute("qwen3.8-max-free", ""), "anthropic-messages");
+});
+
+test("baseUrlFor resolves generic OpenCode gateways before SDK path composition", () => {
+	for (const scope of ["", "/go"]) {
+		for (const prefix of ["zen", "inference"]) {
+			const base = `https://opencode.ai/${prefix}${scope}/v1/`;
+			assert.equal(baseUrlFor(base, "openai-completions"), `https://opencode.ai/inference${scope}/openai/v1`);
+			assert.equal(baseUrlFor(base, "openai-responses"), `https://opencode.ai/inference${scope}/openai/v1`);
+			assert.equal(baseUrlFor(base, "anthropic-messages"), `https://opencode.ai/inference${scope}/anthropic`);
+			assert.equal(baseUrlFor(base, "google-generative-ai"), `https://opencode.ai/inference${scope}/google/v1beta`);
+		}
+	}
+	assert.equal(baseUrlFor("https://opencode.ai/inference/go/google/v1beta/", "google-generative-ai"), "https://opencode.ai/inference/go/google/v1beta");
+	assert.equal(baseUrlFor("https://custom.test/zen/go/v1", "google-generative-ai"), "https://custom.test/zen/go/v1");
 });

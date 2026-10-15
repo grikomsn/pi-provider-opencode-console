@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,32 @@ import {
 const SERVER = "https://console.example.test";
 const COMPLETE = "/console/device?user_code=ABCD-EFGH&client_id=opencode-cli";
 const EXPECTED = "https://opencode.ai/console/device?user_code=ABCD-EFGH&client_id=opencode-cli";
+
+test("session storage respects PI_CODING_AGENT_DIR", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-opencode-isolated-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await saveSession({
+			server: DEFAULT_CONSOLE_SERVER,
+			accessToken: "isolated-access",
+			refreshToken: "isolated-refresh",
+			expiresAt: Date.now() + 3_600_000,
+			accountId: "isolated-account",
+			email: "user@example.test",
+			orgs: [],
+		});
+		const auth = JSON.parse(await readFile(join(agentDir, "auth.json"), "utf8"));
+		assert.equal(auth[PROVIDER_ID].access, "isolated-access");
+		assert.equal((await loadSession())?.accessToken, "isolated-access");
+		await deleteSession();
+		assert.equal(await loadSession(), undefined);
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
 
 test("resolves Console device verification URLs onto the /console subpath", () => {
 	assert.equal(resolveConsoleVerificationUrl(DEFAULT_CONSOLE_SERVER, COMPLETE), EXPECTED);

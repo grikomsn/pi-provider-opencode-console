@@ -26,12 +26,11 @@ export const PROVIDER_ID = "opencode-console";
 export const GO_PROVIDER_ID = "opencode-go-console";
 
 /**
- * Resolve the auth.json location lazily so tests can redirect `HOME`
- * before the first call. The previous top-level constant captured the
- * path at module load, which broke `loadSession` after env changes.
+ * Match pi's configured agent directory, including isolated environments.
+ * Resolve lazily so changes made before a session load are respected.
  */
 function authDir(): string {
-	return join(homedir(), ".pi", "agent");
+	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 function authFile(): string {
 	return join(authDir(), "auth.json");

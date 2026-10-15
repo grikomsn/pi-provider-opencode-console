@@ -83,6 +83,7 @@ Run the provider commands to manage credentials:
 | Env var | Default | Notes |
 | --- | --- | --- |
 | `OPENCODE_CONSOLE_SERVER` | `https://opencode.ai/console` | Override for self-hosted consoles. Persisted to `auth.json` on first sign-in. |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | Pi's agent directory, also used by this extension for session storage. Set it to an isolated directory for testing. |
 
 ## Why separate providers?
 
@@ -112,12 +113,19 @@ Upstream parity research and adopted-behavior citations live in [`docs/opencode-
 
 URL routing is normalized per API kind in `src/endpoint.ts` so each SDK's URL composition produces the right endpoint:
 
+Generic OpenCode catalog bases (`/zen/v1`, `/zen/go/v1`, `/inference/v1`, and
+`/inference/go/v1`) resolve to canonical protocol-specific inference bases before
+SDK URL composition. Gemini models on both gateways use Google, including Go's
+`gemini-4-argon-contributor`; the legacy Go gateway has no Google route. Model-level
+SDK metadata takes precedence over family fallbacks, and custom endpoints remain
+available through model/provider overrides.
+
 | API kind | baseUrl normalization |
 | --- | --- |
-| `anthropic-messages` | strip trailing `/v1` (Anthropic SDK appends `/v1/messages`) |
-| `openai-completions` | keep `/v1` (SDK appends `/chat/completions`) |
-| `openai-responses` | keep `/v1` (SDK appends `/responses`) |
-| `google-generative-ai` | keep `/v1beta` (Google SDK appends `/models/<id>:streamGenerateContent`) |
+| `anthropic-messages` | `/inference[/go]/anthropic`, stripping trailing `/v1` for the SDK's `/v1/messages` |
+| `openai-completions` | `/inference[/go]/openai/v1` (SDK appends `/chat/completions`) |
+| `openai-responses` | `/inference[/go]/openai/v1` (SDK appends `/responses`) |
+| `google-generative-ai` | `/inference[/go]/google/v1beta` (SDK appends `/models/<id>:streamGenerateContent`) |
 
 Identity headers (`x-opencode-org-id`, `x-opencode-client`, `x-opencode-request`) are injected per request in `streamConsole`.
 
