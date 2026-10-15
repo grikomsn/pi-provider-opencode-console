@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.2
+
+### Patch Changes
+
+- 899a666: Use shared OpenCode URL constants and canonical inference discovery endpoints, preserving legacy gateway bases in cached models.
+
 ## 2.0.1
 
 ### Patch Changes
