@@ -10,10 +10,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { OPENCODE_ORIGIN } from "./endpoint.ts";
 
 // Public Console is served at https://opencode.ai/console. The console.opencode.ai
 // alias 302-prefixes /console, so using it as a browser origin doubles that path.
-export const DEFAULT_CONSOLE_SERVER = "https://opencode.ai/console";
+export const DEFAULT_CONSOLE_SERVER = `${OPENCODE_ORIGIN}/console`;
 export const CONSOLE_ALIAS_HOST = "console.opencode.ai";
 export const OPENCODE_CLIENT_ID = "opencode-cli";
 export const OPENCODE_CLIENT = "pi-provider-opencode-console";

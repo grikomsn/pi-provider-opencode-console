@@ -271,5 +271,5 @@ test("go refresh uses the public Go /models catalog for session creds", async ()
 		globalThis.fetch = prevFetch;
 	}
 	assert.match(notifies[0]!.message, /Found 1 models/);
-	assert.ok(urls[0]!.endsWith("/zen/go/v1/models"), urls[0]);
+	assert.ok(urls[0]!.endsWith("/inference/go/v1/models"), urls[0]);
 });

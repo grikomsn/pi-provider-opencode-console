@@ -662,7 +662,7 @@ test("go refreshModels always loads the public Go /models catalog", async () => 
 			publish: () => Promise.resolve(true),
 		});
 		assert.equal(out2.length, 1);
-		assert.ok(urls[0]!.endsWith("/zen/go/v1/models"), urls[0]);
+		assert.ok(urls[0]!.endsWith("/inference/go/v1/models"), urls[0]);
 		assert.equal(auths[0], "Bearer at-x");
 
 		// No credential: anonymous catalog still resolves (auth-ignored).

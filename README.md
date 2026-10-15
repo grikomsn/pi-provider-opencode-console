@@ -17,7 +17,7 @@ A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode
 - OAuth 2.0 device authorization grant (RFC 8628) sign-in via `/login opencode-console` (and `/login opencode-go-console` — Go reuses the shared Console device flow); pi's `/login` lists both providers as "…(OAuth device code)", distinct from pi's native API-key option
 - Org-scoped sign-in: the device grant requests organization scoping, so the workspace is chosen during browser approval when the Console grants it; otherwise a single-org account self-selects and multi-org accounts pick explicitly after sign-in
 - Console: per-org model discovery from the org-scoped `GET /api/config` endpoint
-- Go: the public `GET https://opencode.ai/zen/go/v1/models` catalog (the auth-ignored `lite` list), requests targeting the Go gateway
+- Go: the public `GET https://opencode.ai/inference/go/v1/models` catalog (the auth-ignored `lite` list), requests targeting the Go gateway
 - Public catalog rows are enriched from models.dev and drop disabled/deprecated ids
 - Routes chat requests to the right upstream wire API per-model (`anthropic-messages`, `openai-completions`, `openai-responses`, `google-generative-ai`)
 - Delegates streaming and parsing to pi-ai's built-in implementations
@@ -61,7 +61,7 @@ Model catalogs by provider:
 | Provider | Catalog |
 | --- | --- |
 | `opencode-console` | org-scoped `GET {server}/api/config` with `Authorization: Bearer` + `x-org-id` |
-| `opencode-go-console` | public `GET https://opencode.ai/zen/go/v1/models` (`lite` list), called with the session's access token |
+| `opencode-go-console` | public `GET https://opencode.ai/inference/go/v1/models` (`lite` list), called with the session's access token |
 
 ### Manage
 

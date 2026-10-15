@@ -24,10 +24,19 @@ export type ApiKind =
 	| "openai-responses"
 	| "google-generative-ai";
 
-/** Public chat-completions/catalog base of the Console (former Zen) gateway. */
-export const CONSOLE_API_BASE_URL = "https://opencode.ai/zen/v1";
-/** Public model-catalog/chat base of the Go (subscription, `lite` list) gateway. */
-export const GO_API_BASE_URL = "https://opencode.ai/zen/go/v1";
+export const OPENCODE_ORIGIN = "https://opencode.ai";
+export const OPENCODE_INFERENCE_BASE = `${OPENCODE_ORIGIN}/inference`;
+/** Public model-catalog base of the Console gateway. */
+export const CONSOLE_API_BASE_URL = `${OPENCODE_INFERENCE_BASE}/v1`;
+/** Public model-catalog base of the Go subscription gateway. */
+export const GO_API_BASE_URL = `${OPENCODE_INFERENCE_BASE}/go/v1`;
+
+const PROTOCOL_BASE_PATHS: Readonly<Record<ApiKind, string>> = {
+	"openai-completions": "openai/v1",
+	"openai-responses": "openai/v1",
+	"anthropic-messages": "anthropic/v1",
+	"google-generative-ai": "google/v1beta",
+};
 
 /**
  * `OpenCodeMode` mirrors upstream's two auth systems after the Zen→Console
@@ -59,14 +68,14 @@ export function resolveRoute(modelId: string, npm?: string, mode: OpenCodeMode =
 	// Fallback heuristics by model id.
 	if (/^gpt-/i.test(modelId)) return "openai-responses";
 	if (/^claude-/i.test(modelId)) return "anthropic-messages";
-	// Family-wide routes (sibling parity): every live grok*, muse-spark* and
-	// qwen* model on the gateways is responses or messages, and models.dev
-	// omits `npm` for some of them — the id prefix is the only signal left.
+	// Family fallbacks cover models whose SDK metadata is unavailable.
 	if (/^grok(?:-|$)/i.test(modelId)) return "openai-responses";
 	if (/^muse-spark-/i.test(modelId)) return "openai-responses";
 	// This model uses Completions on Console and Messages on Go.
 	if (/^qwen-?3\.8-max$/i.test(modelId)) return mode === "go" ? "anthropic-messages" : "openai-completions";
 	if (/^qwen/i.test(modelId)) return "anthropic-messages";
+	// MiniMax defaults to Messages on Go and Chat Completions on Console.
+	// Explicit model SDK metadata above can override either fallback.
 	if (mode === "go" && /^minimax-/i.test(modelId)) return "anthropic-messages";
 	if (/^gemini-/i.test(modelId)) return "google-generative-ai";
 	return "openai-completions";
@@ -103,15 +112,22 @@ export function routeFor(api: ApiKind): RouteInfo {
  * after the SDK appends its own path, we hit the correct endpoint.
  */
 export function baseUrlFor(baseUrl: string, api: ApiKind): string {
-	let stripped = baseUrl.replace(/\/+$/, "");
-	const gateway = /^https:\/\/opencode\.ai\/(?:zen|inference)(\/go)?\/v1$/.exec(stripped);
-	if (gateway) {
-		const protocol = api === "google-generative-ai" ? "google/v1beta" : api === "anthropic-messages" ? "anthropic/v1" : "openai/v1";
-		stripped = `https://opencode.ai/inference${gateway[1] ?? ""}/${protocol}`;
-	}
+	const stripped = gatewayBaseUrl(baseUrl, api);
 	if (api === "anthropic-messages") {
 		// Anthropic SDK appends /v1/messages → baseUrl should NOT include /v1.
 		return stripped.replace(/\/v1$/, "");
 	}
 	return stripped;
+}
+
+/** Generic catalog bases are not inference roots for every protocol. */
+function gatewayBaseUrl(baseUrl: string, api: ApiKind): string {
+	const base = baseUrl.replace(/\/+$/, "");
+	let url: URL;
+	try { url = new URL(base); }
+	catch { return base; }
+	if (url.origin !== OPENCODE_ORIGIN || url.username || url.password || url.search || url.hash) return base;
+	const gateway = /^\/(?:zen|inference)(\/go)?\/v1$/.exec(url.pathname);
+	if (!gateway) return base;
+	return `${OPENCODE_INFERENCE_BASE}${gateway[1] ?? ""}/${PROTOCOL_BASE_PATHS[api]}`;
 }
