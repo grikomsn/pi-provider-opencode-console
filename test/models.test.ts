@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPiModels, loadConsoleConfig, loadPublicModels, resetModelsDevCacheForTests, toProviderModelConfigs, type ProviderSource } from "../src/models.ts";
+import {
+	buildPiModels,
+	buildProviderSources,
+	fetchPublicModelsRows,
+	GO_FALLBACK_MODELS,
+	loadConsoleConfig,
+	loadPublicModels,
+	resetModelsDevCacheForTests,
+	toProviderModelConfigs,
+	type ProviderSource,
+	type PublicModelsSnapshot,
+} from "../src/models.ts";
 import { apiBaseForMode, baseUrlFor, CONSOLE_API_BASE_URL, GO_API_BASE_URL } from "../src/endpoint.ts";
 
 const sampleConfig = {
@@ -403,6 +414,54 @@ test("toProviderModelConfigs flattens api and carries the wire route", async () 
 	const configs = toProviderModelConfigs(buildPiModels(providers));
 	assert.equal(configs[0]!.api, "openai-completions");
 	assert.equal((configs[0] as unknown as Record<string, unknown>).wireApi, "anthropic-messages");
+});
+
+test("fetchPublicModelsRows returns rows without touching models.dev", async () => {
+	// Discovery-only: strict fetcher throws on any unexpected URL, proving no
+	// models.dev (or other) fetch happens on this path.
+	const fetcher: typeof fetch = async (input) => {
+		assert.ok(String(input).endsWith("/inference/go/v1/models"), String(input));
+		return Response.json({ data: [{ id: "go-model", name: "GM", limit: { context: 9_000 } }, "bare-string"] });
+	};
+	const rows = await fetchPublicModelsRows("go", "sk-k", fetcher);
+	assert.equal(rows.length, 2);
+	assert.equal(rows[0]!.id, "go-model");
+	assert.equal(rows[0]!.name, "GM");
+	assert.equal((rows[1] as { id: string }).id, "bare-string");
+});
+
+test("fetchPublicModelsRows non-200 throws", async () => {
+	const fetcher: typeof fetch = async () => new Response("", { status: 500 });
+	await assert.rejects(
+		fetchPublicModelsRows("console", "sk-k", fetcher),
+		/failed \(500\)/,
+	);
+});
+
+test("buildProviderSources applies supplemental metadata with no dev snapshot", () => {
+	resetModelsDevCacheForTests();
+	const sources = buildProviderSources("go", [{ id: "hy3-preview" }], undefined);
+	const entries = buildPiModels(sources, "go");
+	assert.equal(entries.length, 1);
+	assert.equal(entries[0]!.name, "Hy3 preview");
+	assert.equal(entries[0]!.contextWindow, 256_000);
+});
+
+test("GO_FALLBACK_MODELS render as model configs offline and stay compatible with enrichment", () => {
+	resetModelsDevCacheForTests();
+	// Offline: bundled ids render with whatever bundled metadata exists.
+	const offline = toProviderModelConfigs(buildPiModels(buildProviderSources("go", GO_FALLBACK_MODELS, undefined), "go"));
+	assert.ok(offline.length >= 30, `unexpected fallback count: ${offline.length}`);
+	assert.ok(offline.every((m) => m.baseUrl === GO_API_BASE_URL));
+	assert.ok(offline.some((m) => m.id === "glm-5.3-flash"));
+	// Enrichment (models.dev reachable, discovery not) fills the bare fallback rows.
+	const devSnapshot: PublicModelsSnapshot = {
+		models: { "step-5-preview": { name: "Step 5", limit: { context: 111_111 } } },
+	};
+	const enriched = buildPiModels(buildProviderSources("go", GO_FALLBACK_MODELS, devSnapshot), "go");
+	const step = enriched.find((m) => m.id === "step-5-preview")!;
+	assert.equal(step.name, "Step 5");
+	assert.equal(step.contextWindow, 111_111);
 });
 
 test("loadPublicModels non-200 throws", async () => {

@@ -342,22 +342,23 @@ function fillFromModelsDev(live: ModelConfigSource, dev?: ModelConfigSource): Mo
 }
 
 /**
- * Load the public (or workspace-scoped) `/models` catalog for a gateway
- * mode: `https://opencode.ai/inference/v1/models` (Console, `full`) or
- * `https://opencode.ai/inference/go/v1/models` (Go, `lite`, auth-ignored).
+ * Fetch the `/models` catalog rows for a gateway mode
+ * (`https://opencode.ai/inference/v1/models` Console `full`, or
+ * `https://opencode.ai/inference/go/v1/models` Go `lite`, auth-ignored).
  * Without a token the catalog is fully public; with one it is Bearer-authed
  * (workspace-disabled models are filtered server-side). Payload shape:
  * `{ data: [ModelSource-like rows] }` with string-only ids permitted.
  *
- * Returns a single-source provider map keyed by the models.dev provider id
- * so `buildPiModels` projection can be reused.
+ * This is the discovery-only half: no models.dev enrichment runs here, so
+ * the caller can publish a first-pass catalog immediately and enrich after.
+ * Throws on non-200 responses.
  */
-export async function loadPublicModels(
+export async function fetchPublicModelsRows(
 	mode: OpenCodeMode,
 	token: string | undefined,
 	fetcher: typeof fetch = fetch,
 	signal?: AbortSignal,
-): Promise<Map<string, ProviderSource>> {
+): Promise<ModelConfigSource[]> {
 	const base = apiBaseForMode(mode);
 	const headers: Record<string, string> = { Accept: "application/json" };
 	if (token) headers.Authorization = `Bearer ${token}`;
@@ -366,23 +367,127 @@ export async function loadPublicModels(
 		throw new Error(`OpenCode ${mode} model discovery failed (${response.status})`);
 	}
 	const payload = (await response.json()) as { data?: unknown[] };
-	const devModels = await fetchModelsDevProvider(mode, fetcher, signal);
-	const models: Record<string, ModelConfigSource> = {};
+	const rows: ModelConfigSource[] = [];
 	for (const item of payload.data ?? []) {
 		const row = asRecord(item);
 		const id = typeof row?.id === "string" && row.id ? row.id : typeof item === "string" && item ? item : undefined;
 		if (!id) continue;
 		const live: ModelConfigSource = row ?? { id };
-		const merged = fillFromModelsDev({ ...live, id }, devModels?.models?.[id]);
-		models[id] = merged;
+		rows.push({ ...live, id });
+	}
+	return rows;
+}
+
+export interface PublicModelsSnapshot {
+	npm?: string;
+	models: Record<string, ModelConfigSource>;
+}
+
+/**
+ * The models.dev snapshot for a mode (supplemental discovery-only ids
+ * merged under real upstream entries). Network is skipped when the
+ * in-process cache is fresh; failures return the last cached snapshot.
+ */
+export async function getModelsDevSnapshot(
+	mode: OpenCodeMode,
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal,
+): Promise<PublicModelsSnapshot | undefined> {
+	return fetchModelsDevProvider(mode, fetcher, signal);
+}
+
+/**
+ * Compose the single-source provider map for `buildPiModels` projection
+ * from `/models` rows. Metadata resolution per id: models.dev, then the
+ * bundled supplemental mirror (only when models.dev lacks the id), merged
+ * under the live row — live values always win per field.
+ */
+export function buildProviderSources(
+	mode: OpenCodeMode,
+	rows: readonly ModelConfigSource[],
+	dev?: PublicModelsSnapshot,
+): Map<string, ProviderSource> {
+	const devId = modelsDevProviderId(mode) as "opencode" | "opencode-go";
+	const models: Record<string, ModelConfigSource> = {};
+	for (const row of rows) {
+		const id = row.id as string;
+		const reference = dev?.models?.[id] ?? SUPPLEMENTAL_MODELS[devId][id];
+		models[id] = fillFromModelsDev(row, reference);
 	}
 	// Hide a legacy alias id when its canonical id is served alongside it.
-	for (const [alias, canonical] of Object.entries(ALIAS_MODELS[modelsDevProviderId(mode) as "opencode" | "opencode-go"])) {
+	for (const [alias, canonical] of Object.entries(ALIAS_MODELS[devId])) {
 		if (alias in models && canonical in models) delete models[alias];
 	}
 	const providerId = modelsDevProviderId(mode);
-	return new Map([[providerId, { name: providerId, api: base, npm: devModels?.npm, models } as ProviderSource]]);
+	return new Map([[providerId, { name: providerId, api: apiBaseForMode(mode), npm: dev?.npm, models } as ProviderSource]]);
 }
+
+/**
+ * Load the composed public (or workspace-scoped) `/models` catalog for a
+ * gateway mode. Convenience wrapper around `fetchPublicModelsRows` +
+ * `getModelsDevSnapshot` + `buildProviderSources`.
+ */
+export async function loadPublicModels(
+	mode: OpenCodeMode,
+	token: string | undefined,
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal,
+): Promise<Map<string, ProviderSource>> {
+	const rows = await fetchPublicModelsRows(mode, token, fetcher, signal);
+	const devModels = await fetchModelsDevProvider(mode, fetcher, signal);
+	return buildProviderSources(mode, rows, devModels);
+}
+
+/**
+ * Bundled fallback ids for the Go subscription gateway (`lite` list),
+ * snapshotted from `https://opencode.ai/inference/go/v1/models` on
+ * 2026-10-20. Live discovery always replaces them; they only surface when
+ * `/models` is unreachable and no persisted catalog exists yet, so the
+ * provider still offers an offline-ready picker list (metadata Poverty:
+ * models.dev/supplemental fills what it can, defaults otherwise).
+ */
+export const GO_FALLBACK_MODEL_IDS: readonly string[] = [
+	"beam-free",
+	"claude-haiku-5-5",
+	"deepseek-v4-pro",
+	"deepseek-v4.1-flash",
+	"gemini-4-argon-contributor",
+	"glm-5.1",
+	"glm-5.2",
+	"glm-5.3",
+	"glm-5.3-flash",
+	"gpt-5.6-luna",
+	"gpt-6-luna",
+	"grok-4.6",
+	"grok-4.7",
+	"hy3",
+	"hy4-preview",
+	"kimi-k2.6",
+	"kimi-k2.7-code",
+	"kimi-k3",
+	"longcat-2.0",
+	"longcat-2.5-preview-free",
+	"mimo-v2.5",
+	"mimo-v2.5-pro",
+	"mimo-v2.6-flash",
+	"mimo-v2.6-pro",
+	"minimax-m2.5",
+	"minimax-m2.7",
+	"minimax-m3",
+	"minimax-m3.1-flash-free",
+	"muse-spark-1.2-contributor",
+	"muse-spark-1.3-contributor",
+	"omen-alpha",
+	"qwen3.6-plus",
+	"qwen3.7-max",
+	"qwen3.7-plus",
+	"qwen3.8-flash",
+	"qwen3.8-max",
+	"step-5-preview",
+];
+
+/** Go fallback rows in `ModelConfigSource` shape (bare ids). */
+export const GO_FALLBACK_MODELS: readonly ModelConfigSource[] = GO_FALLBACK_MODEL_IDS.map((id) => ({ id }));
 
 /**
  * Map a model's `reasoning_options` effort values onto pi's thinking-level
