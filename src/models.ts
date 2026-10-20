@@ -534,9 +534,17 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 			// pi's official config omits them (models.dev: output limit 0).
 			if (/^jev(?:-|$)/i.test(rawId.trim())) continue;
 			const modelId = typeof source.id === "string" ? source.id : rawId;
-			const api = resolveRoute(modelId, stringField(asRecord(source.provider), "npm") ?? stringField(provider, "npm"), mode);
 			const baseUrl = stringField(asRecord(source.provider), "api") ?? stringField(provider, "api") ?? "";
 			if (!baseUrl) continue; // can't route without a base URL
+			// The catalog base decides the protocol for OpenAI-kind bases
+			// (e.g. Go MiniMax rows enriched with `.../openai/v1`), so it must
+			// be known before the route is resolved.
+			const api = resolveRoute(
+				modelId,
+				stringField(asRecord(source.provider), "npm") ?? stringField(provider, "npm"),
+				mode,
+				baseUrl,
+			);
 			const context = num(source.limit?.context, 32_768);
 			const output = num(source.limit?.output, Math.min(context, 8_192));
 			const providerHeaders = stringHeaders(provider.options?.headers);

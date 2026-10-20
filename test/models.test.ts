@@ -447,6 +447,40 @@ test("buildProviderSources applies supplemental metadata with no dev snapshot", 
 	assert.equal(entries[0]!.contextWindow, 256_000);
 });
 
+test("Go MiniMax rows with an OpenAI-style enriched base use Chat Completions", async () => {
+	resetModelsDevCacheForTests();
+	const fetcher: typeof fetch = async (input) => {
+		const url = String(input);
+		if (url.includes("models.dev")) {
+			return new Response(JSON.stringify({
+				"opencode-go": {
+					npm: "@ai-sdk/openai-compatible",
+					models: {
+						"minimax-m3.1-flash-free": {
+							name: "MiniMax M3.1 Flash (free)",
+							provider: { api: "https://opencode.ai/inference/go/openai/v1" },
+							limit: { context: 204_800, output: 65_536 },
+						},
+					},
+				},
+			}), { status: 200 });
+		}
+		// Bare live row: the enriched base comes from models.dev.
+		return new Response(JSON.stringify({ data: [{ id: "minimax-m3.1-flash-free" }] }), { status: 200 });
+	};
+	const providers = await loadPublicModels("go", "sk-k", fetcher);
+	const entries = buildPiModels(providers, "go");
+	const entry = entries.find((m) => m.id === "minimax-m3.1-flash-free");
+	assert.ok(entry, "the MiniMax row must be published");
+	assert.equal(entry.baseUrl, "https://opencode.ai/inference/go/openai/v1");
+	assert.equal(entry.route, "openai-completions");
+	assert.equal(entry.api, "openai-completions");
+	// The SDK must post to `/openai/v1/chat/completions`, not `/openai/v1/messages`.
+	assert.equal(baseUrlFor(entry.baseUrl, entry.route), "https://opencode.ai/inference/go/openai/v1");
+	const [config] = toProviderModelConfigs([entry]);
+	assert.equal((config as unknown as { wireApi: string }).wireApi, "openai-completions");
+});
+
 test("GO_FALLBACK_MODELS render as model configs offline and stay compatible with enrichment", () => {
 	resetModelsDevCacheForTests();
 	// Offline: bundled ids render with whatever bundled metadata exists.

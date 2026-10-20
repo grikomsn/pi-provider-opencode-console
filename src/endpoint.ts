@@ -60,7 +60,12 @@ export function apiBaseForMode(mode: OpenCodeMode): string {
 	return mode === "go" ? GO_API_BASE_URL : CONSOLE_API_BASE_URL;
 }
 
-export function resolveRoute(modelId: string, npm?: string, mode: OpenCodeMode = "console"): ApiKind {
+export function resolveRoute(
+	modelId: string,
+	npm?: string,
+	mode: OpenCodeMode = "console",
+	baseUrl?: string,
+): ApiKind {
 	const pkg = (npm ?? "").toLowerCase();
 	if (pkg.includes("anthropic")) return "anthropic-messages";
 	if (pkg.includes("google")) return "google-generative-ai";
@@ -76,9 +81,23 @@ export function resolveRoute(modelId: string, npm?: string, mode: OpenCodeMode =
 	if (/^qwen/i.test(modelId)) return "anthropic-messages";
 	// MiniMax defaults to Messages on Go and Chat Completions on Console.
 	// Explicit model SDK metadata above can override either fallback.
-	if (mode === "go" && /^minimax-/i.test(modelId)) return "anthropic-messages";
+	// The Go catalog base for MiniMax is OpenAI-style: `/openai/v1` serves
+	// Chat Completions, while Anthropic Messages would 404 on `/openai/v1/messages`.
+	if (mode === "go" && /^minimax-/i.test(modelId)) {
+		return baseUrl && isOpenAiKindBase(baseUrl) ? "openai-completions" : "anthropic-messages";
+	}
 	if (/^gemini-/i.test(modelId)) return "google-generative-ai";
 	return "openai-completions";
+}
+
+/** True when the catalog base is an OpenAI-protocol base (`.../openai/v1`). */
+function isOpenAiKindBase(baseUrl: string): boolean {
+	const base = baseUrl.trim().replace(/\/+$/, "");
+	if (!base) return false;
+	let path = base;
+	try { path = new URL(base).pathname.replace(/\/+$/, ""); }
+	catch { /* not an absolute URL: compare the raw string */ }
+	return /\/openai\/v1$/i.test(path);
 }
 
 export interface RouteInfo {

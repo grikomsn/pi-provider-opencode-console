@@ -95,6 +95,49 @@ test("resolveRoute qwen3.8-max uses the gateway-specific protocol", () => {
 	assert.equal(resolveRoute("qwen3.8-max-free", ""), "anthropic-messages");
 });
 
+test("resolveRoute honours an OpenAI-kind catalog base before the MiniMax fallback", () => {
+	// The Go catalog base for MiniMax is OpenAI-style: `/openai/v1` serves
+	// Chat Completions, while Anthropic Messages would 404 on `/openai/v1/messages`.
+	assert.equal(
+		resolveRoute("minimax-m3.1-flash-free", undefined, "go", "https://opencode.ai/inference/go/openai/v1"),
+		"openai-completions",
+	);
+	// Trailing slashes are ignored.
+	assert.equal(
+		resolveRoute("minimax-m3.1-flash-free", undefined, "go", "https://opencode.ai/inference/go/openai/v1/"),
+		"openai-completions",
+	);
+	// Without a base URL the Go MiniMax fallback still uses Messages.
+	assert.equal(resolveRoute("minimax-m3.1-flash-free", undefined, "go"), "anthropic-messages");
+	// An explicit anthropic npm still wins over an OpenAI-style base.
+	assert.equal(
+		resolveRoute("minimax-m3.1-flash-free", "@ai-sdk/anthropic", "go", "https://opencode.ai/inference/go/openai/v1"),
+		"anthropic-messages",
+	);
+	// ... and so does the explicit openai npm (Responses).
+	assert.equal(
+		resolveRoute("minimax-m3.1-flash-free", "@ai-sdk/openai", "go", "https://opencode.ai/inference/go/openai/v1"),
+		"openai-responses",
+	);
+});
+
+test("resolveRoute keeps the gpt family on Responses even with an OpenAI-kind base", () => {
+	// The OpenAI-kind base override applies to the Go MiniMax fallback only;
+	// a GPT row must not be switched to Chat Completions by its base URL.
+	assert.equal(
+		resolveRoute("gpt-6-luna", undefined, "go", "https://opencode.ai/inference/go/openai/v1"),
+		"openai-responses",
+	);
+});
+
+test("resolveRoute keeps Console MiniMax on Chat Completions", () => {
+	// Console behaviour is unchanged: MiniMax on Console uses Chat Completions.
+	assert.equal(
+		resolveRoute("minimax-m3.1-flash-free", undefined, "console", "https://opencode.ai/inference/openai/v1"),
+		"openai-completions",
+	);
+});
+
 test("baseUrlFor resolves generic OpenCode gateways before SDK path composition", () => {
 	for (const scope of ["", "/go"]) {
 		for (const prefix of ["zen", "inference"]) {
