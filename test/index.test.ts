@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import providerFactory from "../src/index.ts";
+import { resetModelsDevCacheForTests } from "../src/models.ts";
 
 // Capture the registered providers + commands.
 interface CapturedProvider {
@@ -256,25 +257,34 @@ test("refreshModels returns [] when /api/config fails", async () => {
 	}
 });
 
-test("refreshModels serves the stored catalog for the cache-only pass", async () => {
+test("refreshModels serves and publishes the stored catalog for the cache-only pass", async () => {
 	const pi = makeFakePi();
 	providerFactory(cast(pi));
 	const provider = pi.providers[0]!;
 	const refreshModels = provider.config.refreshModels as (ctx: {
 		allowNetwork?: boolean;
+		publish?: (p: { persist: { models: unknown[] } }) => Promise<boolean>;
 		stored?: { models: Array<{ id: string; name: string }> };
 	}) => Promise<Array<{ id: string; name: string }>>;
 	// pi calls refreshModels with allowNetwork === false during startup and in
 	// `-p` mode; the composer treats the return value as the authoritative
-	// catalog, so it must be the persisted list rather than [].
+	// catalog, so it must be the persisted list rather than []. It must also
+	// be published so the snapshot converges without a network hop.
 	const stored = {
 		models: [
 			{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
 			{ id: "glm-5.3", name: "GLM 5.3" },
 		],
 	};
-	const models = await refreshModels({ allowNetwork: false, stored });
+	const published: { persist: { models: unknown[] } }[] = [];
+	const models = await refreshModels({
+		allowNetwork: false,
+		stored,
+		publish: (p) => (published.push(p), Promise.resolve(true)),
+	});
 	assert.deepEqual(models, stored.models);
+	assert.equal(published.length, 1);
+	assert.deepEqual(published[0]!.persist.models, stored.models);
 });
 
 test("refreshModels keeps the stored catalog when the network refresh fails", async () => {
@@ -672,11 +682,170 @@ test("go refreshModels always loads the public Go /models catalog", async () => 
 		assert.equal(out3.length, 1);
 		assert.equal(auths[1], "");
 
-		// Offline phase: no network, no models.
+		// Offline phase: no network, publish stored (empty here); no models.dev
+		// or gateway fetch of any kind blocks the cache-only path.
 		urls.length = 0;
-		const offline = await refreshModels({ allowNetwork: false, publish: () => Promise.resolve(true) });
+		const offlinePublished: unknown[] = [];
+		const offline = await refreshModels({
+			allowNetwork: false,
+			publish: (p) => (offlinePublished.push(p), Promise.resolve(true)),
+		});
 		assert.deepEqual(offline, []);
+		assert.equal(offlinePublished.length, 1);
 		assert.equal(urls.length, 0);
+	} finally {
+		globalThis.fetch = prevFetch;
+	}
+});
+
+// --- consolidated refresh flow (shared publication path for both providers) ---
+
+/** Installs a fetch override serving the go gateway + models.dev; returns collected calls. */
+function installGatewayOverride(handlers: {
+	models: () => Response;
+	modelsDev: () => Response;
+}) {
+	const urls: string[] = [];
+	const auths: string[] = [];
+	const prevFetch = globalThis.fetch;
+	globalThis.fetch = (async (input, init) => {
+		const url = String(input);
+		if (url.includes("models.dev")) return handlers.modelsDev();
+		urls.push(url);
+		auths.push(new Headers(init?.headers).get("authorization") ?? "");
+		return handlers.models();
+	}) as typeof fetch;
+	return { urls, auths, restore: () => (globalThis.fetch = prevFetch) };
+}
+
+/** Collects publish() calls as `null` when publish was not requested. */
+function publishRecorder() {
+	const published: { models: Array<Record<string, unknown>>; checkedAt: number }[] = [];
+	return {
+		published,
+		publish: (p: { persist: { models: Array<Record<string, unknown>>; checkedAt: number } }) => {
+			published.push(p.persist);
+			return Promise.resolve(true);
+		},
+	};
+}
+
+function getGoRefresh() {
+	const pi = makeFakePi();
+	providerFactory(cast(pi));
+	const provider = pi.providers[1]!;
+	return provider.config.refreshModels as (ctx: {
+		signal?: AbortSignal;
+		allowNetwork?: boolean;
+		credential?: unknown;
+		stored?: { models: Array<{ id: string; name: string }> };
+		publish?: (p: { persist: { models: Array<Record<string, unknown>>; checkedAt: number } }) => Promise<boolean>;
+	}) => Promise<Array<{ id: string }>>;
+}
+
+const modelsDevGoPayload = {
+	"opencode-go": {
+		npm: "@ai-sdk/openai-compatible",
+		models: { "go-model": { name: "Go Model Enriched", limit: { context: 262_144, output: 8_192 } } },
+	},
+};
+
+test("go refreshModels publishes live rows first, then models.dev enrichment", async () => {
+	resetModelsDevCacheForTests();
+	const refreshModels = getGoRefresh();
+	const rec = publishRecorder();
+	const gw = installGatewayOverride({
+		models: () => Response.json({ data: [{ id: "go-model" }] }),
+		modelsDev: () => Response.json(modelsDevGoPayload),
+	});
+	try {
+		const configs = await refreshModels({ publish: rec.publish });
+		// Two publications: rows-only first pass, then the enriched catalog.
+		assert.equal(rec.published.length, 2);
+		assert.equal(rec.published[0]!.models.length, 1);
+		assert.equal(rec.published[0]!.models[0]!.contextWindow, 32_768); // bundled default
+		assert.equal(rec.published[1]!.models[0]!.contextWindow, 262_144); // enriched
+		assert.equal(configs.length, 1);
+		assert.equal(configs[0]!.id, "go-model");
+		assert.equal((configs[0] as unknown as Record<string, unknown>).name, "Go Model Enriched");
+	} finally {
+		gw.restore();
+	resetModelsDevCacheForTests();
+	}
+});
+
+test("go refreshModels publishes live rows without blocking on models.dev", async () => {
+	// models.dev hangs until the caller aborts; the first publication must
+	// already have happened, and the returned catalog stays rows-first.
+	resetModelsDevCacheForTests();
+	const refreshModels = getGoRefresh();
+	const rec = publishRecorder();
+	const controller = new AbortController();
+	const prevFetch = globalThis.fetch;
+	globalThis.fetch = (async (input, init) => {
+		const url = String(input);
+		if (url.includes("models.dev")) {
+			return new Promise<Response>((_, reject) => {
+				controller.signal.addEventListener("abort", () =>
+					reject(new Error("aborted models.dev")),
+				);
+			});
+		}
+		return Response.json({ data: [{ id: "go-model" }] });
+	}) as typeof fetch;
+	try {
+		const pending = refreshModels({ signal: controller.signal, publish: rec.publish });
+		// Wait (bounded) for the rows-only publication to land.
+		for (let i = 0; i < 100 && rec.published.length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		assert.ok(rec.published.length >= 1, "rows-only publication never landed");
+		assert.equal(rec.published[0]!.models[0]!.id, "go-model");
+		assert.equal(rec.published[0]!.models[0]!.contextWindow, 32_768);
+		controller.abort();
+		const configs = await pending;
+		assert.equal(configs.length, 1);
+		assert.equal(configs[0]!.id, "go-model");
+	} finally {
+		globalThis.fetch = prevFetch;
+	resetModelsDevCacheForTests();
+	}
+});
+
+test("go refreshModels falls back to the bundled catalog when /models is unreachable", async () => {
+	resetModelsDevCacheForTests();
+	const refreshModels = getGoRefresh();
+	const rec = publishRecorder();
+	const prevFetch = globalThis.fetch;
+	globalThis.fetch = (async (input) => {
+		if (String(input).includes("models.dev")) return new Response("dev down", { status: 503 });
+		return new Response("gateway down", { status: 503 });
+	}) as typeof fetch;
+	try {
+		const configs = await refreshModels({ publish: rec.publish });
+		assert.ok(configs.length >= 30, `fallback too small: ${configs.length}`);
+		assert.ok(configs.some((m) => m.id === "glm-5.3-flash"));
+		assert.ok(rec.published.length >= 1);
+		assert.deepEqual(rec.published[0]!.models.map((m) => m.id), configs.map((m) => m.id));
+	} finally {
+		globalThis.fetch = prevFetch;
+	resetModelsDevCacheForTests();
+	}
+});
+
+test("go refreshModels prefers the persisted catalog over the bundled fallback", async () => {
+	const refreshModels = getGoRefresh();
+	const rec = publishRecorder();
+	const prevFetch = globalThis.fetch;
+	globalThis.fetch = (async (input) => {
+		if (String(input).includes("models.dev")) return new Response("dev down", { status: 503 });
+		throw new Error("gateway down");
+	}) as typeof fetch;
+	try {
+		const stored = { models: [{ id: "stored-model", name: "Stored" }] };
+		const configs = await refreshModels({ stored, publish: rec.publish });
+		assert.deepEqual(configs.map((m) => m.id), ["stored-model"]);
+		assert.equal(rec.published.length, 1);
 	} finally {
 		globalThis.fetch = prevFetch;
 	}

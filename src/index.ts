@@ -42,9 +42,17 @@ import {
 	saveSession,
 } from "./auth.ts";
 import type { ConsoleSession } from "./auth.ts";
-import { buildPiModels, loadConsoleConfig, loadPublicModels, toProviderModelConfigs } from "./models.ts";
+import {
+	buildPiModels,
+	buildProviderSources,
+	fetchPublicModelsRows,
+	getModelsDevSnapshot,
+	GO_FALLBACK_MODELS,
+	loadConsoleConfig,
+	toProviderModelConfigs,
+	type ModelConfigSource,
+} from "./models.ts";
 import { streamConsoleWithSession } from "./stream.ts";
-import type { BuiltModel } from "./models.ts";
 import { EXTENSION_API } from "./endpoint.ts";
 import { registerCommand } from "./commands.ts";
 
@@ -194,12 +202,18 @@ function makeStreamLoader(providerId: string) {
 	};
 }
 
-/** Publish a built model list to pi's model store. */
-async function publishModels(
+/**
+ * Publish a built model list to pi's model store and return it (the single
+ * publication path: refreshModels both publishes its persisted snapshot and
+ * returns the same list to the caller's composer).
+ */
+async function publishAndReturn(
 	publish: RefreshModelsContext["publish"],
 	configs: ProviderModelConfig[],
-): Promise<void> {
-	await publish({
+): Promise<ProviderModelConfig[]> {
+	// The composer always supplies publish(); tolerate its absence the way
+	// older test harnesses do.
+	await publish?.({
 		persist: {
 			models: configs as unknown as Parameters<typeof publish>[0]["persist"] extends { persist?: infer P }
 				? P
@@ -207,6 +221,92 @@ async function publishModels(
 			checkedAt: Date.now(),
 		},
 	});
+	return configs;
+}
+
+/**
+ * The catalog refresh both providers share:
+ *
+ * - Cache-only pass (`allowNetwork === false`, startup/`-p`): publish and
+ *   serve the persisted catalog synchronously — never a network hop, so the
+ *   model snapshot shows the OpenCode providers as early as possible.
+ * - Network pass: live discovery, then publish. The Go flow publishes in
+ *   two phases: rows-only first (bundled supplemental metadata requires no
+ *   network), then models.dev enrichment — so live models surface before
+ *   the ~5MB enrichment payload lands. When `/models` is unreachable and
+ *   nothing is persisted yet, the bundled Go fallback ids keep the
+ *   provider visible offline.
+ */
+async function refreshProviderCatalog(
+	providerId: string,
+	context: RefreshModelsContext,
+): Promise<ProviderModelConfig[]> {
+	const { signal, publish, credential, allowNetwork, stored } = context;
+	// pi's provider composer applies whatever we return as the authoritative
+	// catalog; returning [] would wipe the persisted models. Serve and
+	// re-publish the stored catalog for the cache-only pass.
+	const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
+	if (allowNetwork === false) {
+		return publishAndReturn(publish, cached);
+	}
+	try {
+		if (providerId === GO_PROVIDER_ID) {
+			return await refreshGoCatalog(context, cached);
+		}
+		// Device-code session: org-scoped `/api/config` catalog.
+		const session = await loadSession();
+		if (!session || !session.orgId) {
+			return publishAndReturn(publish, []);
+		}
+		const fresh = await ensureFreshSession(session);
+		if (!fresh.orgId) {
+			return publishAndReturn(publish, []);
+		}
+		const providers = await loadConsoleConfig(fresh.server, fresh.accessToken, fresh.orgId, fetch, signal);
+		return publishAndReturn(publish, toProviderModelConfigs(buildPiModels(providers)));
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		// Keep serving the last known catalog rather than clearing models.
+		return publishAndReturn(publish, cached);
+	}
+}
+
+/**
+ * Go discovery: the public `/models` catalog on the Go gateway (`lite`
+ * list) — never the org-scoped `/api/config`. With the session's Bearer
+ * access token, workspace-disabled models are filtered server-side.
+ */
+async function refreshGoCatalog(
+	{ signal, publish, credential }: RefreshModelsContext,
+	cached: ProviderModelConfig[],
+): Promise<ProviderModelConfig[]> {
+	const token = credential?.type === "oauth" ? credential.access : undefined;
+	let rows: ModelConfigSource[];
+	try {
+		rows = await fetchPublicModelsRows("go", token, fetch, signal);
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		if (cached.length > 0) {
+			// A persisted catalog is fresher than the bundled static snapshot.
+			return publishAndReturn(publish, cached);
+		}
+		rows = [...GO_FALLBACK_MODELS];
+	}
+	// Phase 1: rows-only post-processing with bundled metadata (no network);
+	// publish immediately so the provider becomes visible before enrichment.
+	let configs = toProviderModelConfigs(buildPiModels(buildProviderSources("go", rows, undefined), "go"));
+	await publishAndReturn(publish, configs);
+	// Phase 2: models.dev enrichment (best effort — bundled supplements
+	// already covered ids models.dev lacks; a failed fetch keeps phase 1).
+	const dev = await getModelsDevSnapshot("go", fetch, signal);
+	if (dev) {
+		const enriched = toProviderModelConfigs(buildPiModels(buildProviderSources("go", rows, dev), "go"));
+		if (enriched.length > 0) {
+			configs = enriched;
+			await publishAndReturn(publish, configs);
+		}
+	}
+	return configs;
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -225,41 +325,7 @@ export default function (pi: ExtensionAPI): void {
 			getApiKey: sharedGetApiKey,
 		},
 		async refreshModels(context) {
-			const { signal, publish, credential, allowNetwork, stored } = context;
-			// pi runs a cache-only pass (allowNetwork === false) during startup,
-			// `-p`, and credential changes, then an optional network pass. Its
-			// provider composer applies whatever this returns as the
-			// authoritative catalog, so returning [] here would wipe the
-			// persisted models. Serve the stored catalog instead.
-			const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
-			if (allowNetwork === false) return cached;
-			try {
-				// Device-code session: org-scoped `/api/config` catalog.
-				const models: BuiltModel[] = await (async () => {
-					const session = await loadSession();
-					if (!session || !session.orgId) {
-						return [] as BuiltModel[];
-					}
-					const fresh = await ensureFreshSession(session);
-					if (!fresh.orgId) {
-						return [] as BuiltModel[];
-					}
-					const providers = await loadConsoleConfig(
-						fresh.server,
-						fresh.accessToken,
-						fresh.orgId,
-						fetch,
-						signal,
-					);
-					return buildPiModels(providers);
-				})();
-				const configs = toProviderModelConfigs(models);
-				await publishModels(publish, configs);
-				return configs;
-			} catch {
-				// Keep serving the last known catalog rather than clearing models.
-				return cached;
-			}
+			return refreshProviderCatalog(PROVIDER_ID, context);
 		},
 		streamSimple(model, context, options) {
 			// streamSimple must return an AssistantMessageEventStream
@@ -289,26 +355,7 @@ export default function (pi: ExtensionAPI): void {
 			getApiKey: sharedGetApiKey,
 		},
 		async refreshModels(context) {
-			const { signal, publish, credential, allowNetwork, stored } = context;
-			// See the console provider: serve the persisted catalog for the
-			// cache-only pass instead of returning an empty list.
-			const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
-			if (allowNetwork === false) return cached;
-			try {
-				// Go discovery is always the public `/models` catalog on the Go
-				// gateway (`lite` list) — never the org-scoped `/api/config`.
-				// With the session's Bearer access token, workspace-disabled
-				// models are filtered.
-				const token = credential?.type === "oauth" ? credential.access : undefined;
-				const providers = await loadPublicModels("go", token, fetch, signal);
-				const models = buildPiModels(providers, "go");
-				const configs = toProviderModelConfigs(models);
-				await publishModels(publish, configs);
-				return configs;
-			} catch {
-				// Keep serving the last known catalog rather than clearing models.
-				return cached;
-			}
+			return refreshProviderCatalog(GO_PROVIDER_ID, context);
 		},
 		streamSimple(model, context, options) {
 			return streamConsoleWithSession(
