@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -76,9 +76,35 @@ interface CapturedConfig {
 	streamSimple?: unknown;
 }
 
+/**
+ * Run `fn` with `PI_CODING_AGENT_DIR` pointed at a throwaway agent directory
+ * holding `models-store.json` (or nothing, when `store` is omitted) so the
+ * registration-time catalog seed never reads the developer's real store.
+ */
+async function withAgentDir(store: unknown, fn: () => Promise<void> | void): Promise<void> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-provider-opencode-console-agent-"));
+	const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = dir;
+	try {
+		if (store !== undefined) {
+			await writeFile(join(dir, "models-store.json"), JSON.stringify(store));
+		}
+		await fn();
+	} finally {
+		if (prevAgentDir === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+		}
+		await rm(dir, { recursive: true, force: true });
+	}
+}
+
 test("extension registers the console and go providers", async () => {
 	const pi = makeFakePi();
-	providerFactory(cast(pi));
+	// No persisted catalog yet: both providers register empty and stay that
+	// way until a refresh publishes one.
+	await withAgentDir(undefined, () => providerFactory(cast(pi)));
 	assert.equal(pi.providers.length, 2);
 	assert.equal(pi.providers[0]!.name, "opencode-console");
 	assert.equal(pi.providers[1]!.name, "opencode-go-console");
@@ -99,6 +125,22 @@ test("extension registers the console and go providers", async () => {
 		assert.equal(typeof cfg.refreshModels, "function");
 		assert.equal(typeof cfg.streamSimple, "function");
 	}
+});
+
+test("registration seeds pi's persisted catalog", async () => {
+	const row = {
+		id: "deepseek-v4.1-flash",
+		name: "DeepSeek V4.1 Flash",
+		api: "openai-completions",
+		baseUrl: "https://opencode.ai/inference/go/openai/v1",
+	};
+	const pi = makeFakePi();
+	await withAgentDir({ "opencode-go-console": { models: [row], checkedAt: 1 } }, () => providerFactory(cast(pi)));
+	// Pi resolves its startup model before the first refresh publishes, so the
+	// persisted row has to be registered with the provider.
+	assert.deepEqual((pi.providers[1]!.config as CapturedConfig).models, [row]);
+	// Providers keep their own catalogs.
+	assert.deepEqual((pi.providers[0]!.config as CapturedConfig).models, []);
 });
 
 test("extension registers /opencode-console and /opencode-go-console commands", async () => {

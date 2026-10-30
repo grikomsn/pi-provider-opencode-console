@@ -55,6 +55,7 @@ import {
 import { streamConsoleWithSession } from "./stream.ts";
 import { EXTENSION_API } from "./endpoint.ts";
 import { registerCommand } from "./commands.ts";
+import { readPersistedProviderModels } from "./store.ts";
 
 /** The shared device-flow login used by both provider registrations. */
 async function deviceLogin(
@@ -313,7 +314,10 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerProvider(PROVIDER_ID, {
 		name: "OpenCode Console",
 		api: EXTENSION_API,
-		models: [],
+		// Seed the persisted catalog: pi resolves its startup model before the
+		// first cache-only refresh publishes, and an empty provider makes it
+		// skip a saved `defaultProvider`/`defaultModel`.
+		models: readPersistedProviderModels(PROVIDER_ID),
 		// OAuth-only: no `apiKey` registration, so pi's /login offers just
 		// the device-code path (pi's native "Enter API key" method is not
 		// available for these providers).
@@ -344,7 +348,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerProvider(GO_PROVIDER_ID, {
 		name: "OpenCode Go",
 		api: EXTENSION_API,
-		models: [],
+		// See the Console registration: the persisted catalog keeps the provider
+		// resolvable during pi's initial model selection.
+		models: readPersistedProviderModels(GO_PROVIDER_ID),
 		oauth: {
 			// Go subscriptions are managed in the OpenCode Console; device
 			// sign-in for Go reuses the shared Console device flow.
