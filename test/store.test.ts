@@ -1,37 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { readPersistedProviderModels } from "../src/store.ts";
-
-/**
- * Run `fn` with `PI_CODING_AGENT_DIR` pointed at a throwaway agent directory
- * holding `models-store.json` (or nothing, when `store` is omitted).
- */
-async function withAgentDir(store: unknown, fn: () => void): Promise<void> {
-	const dir = await mkdtemp(join(tmpdir(), "pi-provider-opencode-console-store-"));
-	const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = dir;
-	try {
-		if (store !== undefined) {
-			await mkdir(dir, { recursive: true });
-			await writeFile(
-				join(dir, "models-store.json"),
-				typeof store === "string" ? store : JSON.stringify(store),
-			);
-		}
-		fn();
-	} finally {
-		if (prevAgentDir === undefined) {
-			delete process.env.PI_CODING_AGENT_DIR;
-		} else {
-			process.env.PI_CODING_AGENT_DIR = prevAgentDir;
-		}
-		await rm(dir, { recursive: true, force: true });
-	}
-}
+import { withAgentDir } from "./helpers.ts";
 
 const goRow = {
 	id: "deepseek-v4.1-flash",
@@ -77,6 +48,15 @@ test("returns [] when the entry does not carry a model list", async () => {
 test("drops persisted rows without a usable id", async () => {
 	await withAgentDir(
 		{ "opencode-go-console": { models: [goRow, { name: "no id" }, "junk"] } },
+		() => {
+			assert.deepEqual(readPersistedProviderModels("opencode-go-console"), [goRow]);
+		},
+	);
+});
+
+test("drops persisted rows without a baseUrl", async () => {
+	await withAgentDir(
+		{ "opencode-go-console": { models: [goRow, { id: "no-base-url" }, { id: "bad-base-url", baseUrl: 7 }] } },
 		() => {
 			assert.deepEqual(readPersistedProviderModels("opencode-go-console"), [goRow]);
 		},

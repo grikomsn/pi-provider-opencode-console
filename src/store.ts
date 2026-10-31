@@ -10,15 +10,10 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-
-/** Match pi's configured agent directory, including isolated environments. */
-function agentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-}
 
 interface PersistedProviderEntry {
 	models?: unknown;
@@ -31,16 +26,23 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * The catalog pi persisted for `providerId`, or an empty list when nothing has
  * been discovered yet (no store, unreadable store, or no entry for that id).
  * Rows come from pi's own publication, so they already carry the `api` and
- * `baseUrl` pi's provider composer needs at registration time.
+ * `baseUrl` pi's provider composer needs at registration time; a persisted row
+ * without a usable `id` or `baseUrl` is dropped rather than left to throw
+ * during `registerProvider` (which would fail the whole extension load).
  */
 export function readPersistedProviderModels(providerId: string): ProviderModelConfig[] {
 	try {
-		const raw = readFileSync(join(agentDir(), "models-store.json"), "utf8");
+		const raw = readFileSync(join(getAgentDir(), "models-store.json"), "utf8");
 		const store: unknown = JSON.parse(raw);
 		if (!isRecord(store) || !isRecord(store[providerId])) return [];
 		const entry = store[providerId] as PersistedProviderEntry;
 		if (!Array.isArray(entry.models)) return [];
-		return entry.models.filter((model): model is ProviderModelConfig => isRecord(model) && typeof model.id === "string");
+		return entry.models.filter(
+			(model): model is ProviderModelConfig =>
+				isRecord(model) &&
+				typeof model.id === "string" &&
+				typeof model.baseUrl === "string",
+		);
 	} catch {
 		return [];
 	}
