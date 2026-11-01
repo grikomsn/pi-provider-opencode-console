@@ -53,6 +53,11 @@ async function withFakeServer(
 	}
 }
 
+/** Request path without its query string (SDKs may append flags like `?beta=true`). */
+function pathOf(url: string | undefined): string | undefined {
+	return url === undefined ? undefined : new URL(url, "http://localhost").pathname;
+}
+
 function makeOpenAiCompletionsSSE(text: string): string {
 	const completion = {
 		id: "fake-1",
@@ -152,7 +157,8 @@ test("streamConsole strips /v1 from anthropic baseUrl before SDK", async () => {
 			const req = captured[0]!;
 			assert.equal(req.headers["x-api-key"], "tok");
 			assert.equal(req.headers["anthropic-version"], "2023-06-01");
-			assert.equal(req.url, "/v1/messages");
+			// Path only: newer Anthropic SDKs append `?beta=true` (beta messages API).
+			assert.equal(pathOf(req.url), "/v1/messages");
 		},
 	);
 });
@@ -441,7 +447,7 @@ test("streamConsole routes wireApi models through the wrapper with a stripped ba
 			}
 		},
 	);
-	assert.equal(requestPath, "/inference/anthropic/v1/messages");
+	assert.equal(pathOf(requestPath), "/inference/anthropic/v1/messages");
 });
 
 test("streamConsole sends wireId instead of a disambiguated model id", async () => {

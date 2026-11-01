@@ -13,6 +13,7 @@ import {
 	type PublicModelsSnapshot,
 } from "../src/models.ts";
 import { apiBaseForMode, baseUrlFor, CONSOLE_API_BASE_URL, GO_API_BASE_URL } from "../src/endpoint.ts";
+import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 const sampleConfig = {
 	config: {
@@ -206,7 +207,9 @@ test("buildPiModels skips models without baseUrl", () => {
 test("toProviderModelConfigs maps all required fields", () => {
 	const map = new Map(Object.entries(sampleConfig.config.provider));
 	const models = buildPiModels(map);
-	const configs = toProviderModelConfigs(models);
+	// pi >= 1.x widens ProviderModelConfig to chat | image | classifier rows;
+	// this provider only emits chat rows.
+	const configs = toProviderModelConfigs(models) as Extract<ProviderModelConfig, { type?: "chat" }>[];
 	assert.equal(configs.length, 2);
 	for (const c of configs) {
 		assert.ok(typeof c.id === "string");

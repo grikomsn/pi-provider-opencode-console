@@ -25,6 +25,7 @@ import {
 	type Model,
 	type ProviderStreams,
 	type SimpleStreamOptions,
+	type TranscriptContext,
 	anthropicMessagesApi,
 	createAssistantMessageEventStream,
 	googleGenerativeAIApi,
@@ -251,7 +252,11 @@ export function streamConsole(
 					headers,
 				};
 
-				const inner = apiFactory().streamSimple(overridden, context, innerOpts);
+				// pi >= 1.x hands provider `streamSimple` an already-normalized
+				// (branded) `TranscriptContext`; it is forwarded untouched, so
+				// only the static type differs from the raw `Context` older
+				// hosts and the tests pass.
+				const inner = apiFactory().streamSimple(overridden, context as TranscriptContext, innerOpts);
 				let errorMessage: string | undefined;
 				let completed = false;
 				let forwarded = 0;
