@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { readPersistedProviderModels } from "../src/store.ts";
+import { readPersistedProviderModels, usablePersistedModels } from "../src/store.ts";
 import { withAgentDir } from "./helpers.ts";
 
 const goRow = {
@@ -61,4 +61,49 @@ test("drops persisted rows without a baseUrl", async () => {
 			assert.deepEqual(readPersistedProviderModels("opencode-go-console"), [goRow]);
 		},
 	);
+});
+
+test("reads a store that starts with a byte-order mark, as pi's own reader does", async () => {
+	await withAgentDir(`\uFEFF${JSON.stringify({ "opencode-go-console": { models: [goRow] } })}`, () => {
+		assert.deepEqual(readPersistedProviderModels("opencode-go-console"), [goRow]);
+	});
+});
+
+test("returns [] for a store whose root is not an object", async () => {
+	await withAgentDir("[]", () => {
+		assert.deepEqual(readPersistedProviderModels("opencode-go-console"), []);
+	});
+});
+
+test("drops rows whose api or baseUrl would make pi's registration throw", async () => {
+	const corrupt = [
+		{ ...goRow, id: "api-empty", api: "" },
+		{ ...goRow, id: "api-blank", api: "  " },
+		{ ...goRow, id: "api-number", api: 7 },
+		{ ...goRow, id: "base-empty", baseUrl: "" },
+		{ ...goRow, id: "base-blank", baseUrl: " " },
+		{ ...goRow, id: "base-null", baseUrl: null },
+		{ ...goRow, id: "" },
+		{ ...goRow, id: "   " },
+	];
+	await withAgentDir({ "opencode-go-console": { models: [...corrupt, goRow] } }, () => {
+		assert.deepEqual(readPersistedProviderModels("opencode-go-console"), [goRow]);
+	});
+});
+
+test("keeps rows that defer their api to the provider", () => {
+	const { api: _api, ...noApi } = goRow;
+	const nullApi = { ...goRow, api: null };
+	assert.deepEqual(usablePersistedModels([noApi, nullApi]), [noApi, nullApi]);
+});
+
+test("keeps only chat rows", () => {
+	const chat = { ...goRow, type: "chat" };
+	const image = { ...goRow, id: "img", type: "image" };
+	assert.deepEqual(usablePersistedModels([chat, image, goRow]), [chat, goRow]);
+});
+
+test("usablePersistedModels tolerates a missing or non-array model list", () => {
+	assert.deepEqual(usablePersistedModels(undefined), []);
+	assert.deepEqual(usablePersistedModels({ id: "x" }), []);
 });

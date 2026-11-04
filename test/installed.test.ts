@@ -13,11 +13,11 @@ import test from "node:test";
  * pi runs `--offline`, and `test/fixtures/host-fetch.ts` replaces `fetch`,
  * so no request can leave the machine and no real credential is involved.
  *
- * The model is passed explicitly with `--model` so the case does not depend
- * on startup default-model resolution. Once the registration-time catalog
- * seed (PR #30) lands, a second case without `--model` (relying on
- * `defaultProvider`/`defaultModel` in settings.json) can pin that the saved
- * default is honoured at startup.
+ * The first case passes the model explicitly with `--model`. The second
+ * passes none and relies on `defaultProvider`/`defaultModel` in settings.json,
+ * with a competing built-in provider configured (`DEEPSEEK_API_KEY`), so it
+ * pins that the registration-time catalog seed keeps a saved default on a
+ * persisted-only model honoured at startup (issue #29).
  */
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -81,7 +81,7 @@ function run(command: string, args: string[], options: { cwd: string; env: NodeJ
 	});
 }
 
-test("packed extension streams an OpenCode Go prompt through bundled pi", { timeout: 90_000 }, async () => {
+async function smoke(startup: "model-flag" | "saved-default"): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "pi-provider-opencode-console-packed-"));
 	const repository = fileURLToPath(new URL("..", import.meta.url));
 	const cli = fileURLToPath(new URL("./bundle/cli.js", import.meta.resolve("@earendil-works/pi-coding-agent")));
@@ -99,7 +99,12 @@ test("packed extension streams an OpenCode Go prompt through bundled pi", { time
 
 		const agent = join(root, "agent");
 		await mkdir(agent);
-		await writeFile(join(agent, "settings.json"), JSON.stringify({ quietStartup: true, checkForUpdates: false }));
+		const settings: Record<string, unknown> = { quietStartup: true, checkForUpdates: false };
+		if (startup === "saved-default") {
+			settings.defaultProvider = GO_PROVIDER_ID;
+			settings.defaultModel = MODEL_ID;
+		}
+		await writeFile(join(agent, "settings.json"), JSON.stringify(settings));
 		await writeFile(join(agent, "auth.json"), JSON.stringify({ [GO_PROVIDER_ID]: oauthEntry }), { mode: 0o600 });
 		await writeFile(
 			join(agent, "models-store.json"),
@@ -118,7 +123,7 @@ test("packed extension streams an OpenCode Go prompt through bundled pi", { time
 				"-e", join(root, "package"),
 				"--no-mcp", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes",
 				"--no-approve", "--no-session", "--no-tools",
-				"--model", `${GO_PROVIDER_ID}/${MODEL_ID}`,
+				...(startup === "model-flag" ? ["--model", `${GO_PROVIDER_ID}/${MODEL_ID}`] : []),
 				"--mode", "json",
 				"-p", "Reply with OK.",
 			],
@@ -137,6 +142,9 @@ test("packed extension streams an OpenCode Go prompt through bundled pi", { time
 					XDG_STATE_HOME: root,
 					XDG_CACHE_HOME: root,
 					OPENCODE_TEST_FETCH_LOG: log,
+					// A competing configured provider: without the seed, pi's
+					// fallback walk would start the saved-default case on it.
+					...(startup === "saved-default" ? { DEEPSEEK_API_KEY: "smoke-not-a-real-key" } : {}),
 				},
 			},
 		);
@@ -171,4 +179,12 @@ test("packed extension streams an OpenCode Go prompt through bundled pi", { time
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
-});
+}
+
+test("packed extension streams an OpenCode Go prompt through bundled pi", { timeout: 90_000 }, () => smoke("model-flag"));
+
+test(
+	"packed extension honours a saved OpenCode Go default at startup without --model",
+	{ timeout: 90_000 },
+	() => smoke("saved-default"),
+);
