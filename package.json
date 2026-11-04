@@ -30,7 +30,8 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/grikomsn/pi-provider-opencode-console/main/assets/cover.jpg"
   },
   "publishConfig": {
     "access": "public",
@@ -42,7 +43,7 @@
     "check": "npm run typecheck && npm test",
     "package": "npm pack --dry-run",
     "changeset": "changeset",
-    "version": "changeset version"
+    "version": "changeset version && npm install --package-lock-only --ignore-scripts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -58,7 +59,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   },
@@ -66,7 +67,7 @@
     "node": ">=22.19.0"
   },
   "allowScripts": {
-    "@google/genai@1.52.0": true,
-    "protobufjs@7.6.5": true
+    "@google/genai@2.21.0": true,
+    "protobufjs@7.6.6": true
   }
 }
