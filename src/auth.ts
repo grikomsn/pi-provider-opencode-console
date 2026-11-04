@@ -8,8 +8,8 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { OPENCODE_ORIGIN } from "./endpoint.ts";
 
 // Public Console is served at https://opencode.ai/console. The console.opencode.ai
@@ -26,15 +26,8 @@ export const PROVIDER_ID = "opencode-console";
  */
 export const GO_PROVIDER_ID = "opencode-go-console";
 
-/**
- * Match pi's configured agent directory, including isolated environments.
- * Resolve lazily so changes made before a session load are respected.
- */
-function authDir(): string {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-}
 function authFile(): string {
-	return join(authDir(), "auth.json");
+	return join(getAgentDir(), "auth.json");
 }
 
 export interface ConsoleOrg {
@@ -371,7 +364,7 @@ async function readAuthJson(): Promise<AuthJson> {
 }
 
 async function writeAuthJson(auth: AuthJson): Promise<void> {
-	const dir = authDir();
+	const dir = getAgentDir();
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	await writeFile(authFile(), JSON.stringify(auth, null, 2), { mode: 0o600 });
 }

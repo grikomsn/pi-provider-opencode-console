@@ -93,12 +93,14 @@ The built-in `opencode` and `opencode-go` providers in Pi handle API-key-only ac
 
 ```
 pi extension entry (src/index.ts)
-  ├─ registerProvider("opencode-console", { oauth, refreshModels, streamSimple })   [OAuth-only: no apiKey method]
+  ├─ registerProvider("opencode-console", { models, oauth, refreshModels, streamSimple })   [OAuth-only: no apiKey method]
+  │    ├─ models            → persisted catalog from pi's models-store.json (resolves the startup default)
   │    ├─ oauth.login      → shared device-code flow + org picker → auth.json[providerId]
   │    ├─ oauth.refreshToken → canonical refresh + sibling mirror (shared session)
   │    ├─ refreshModels    → org-scoped /api/config
   │    └─ streamSimple     → streamConsoleWithSession (session loader)
-  ├─ registerProvider("opencode-go-console", { oauth, refreshModels, streamSimple }) [OAuth-only]
+  ├─ registerProvider("opencode-go-console", { models, oauth, refreshModels, streamSimple }) [OAuth-only]
+  │    ├─ models            → persisted catalog (same registration-time seed)
   │    ├─ refreshModels    → public /models on the Go gateway (lite list, session token)
   │    └─ streamSimple     → streamConsoleWithSession (Go entry, Console-entry fallback)
   └─ registerCommand for both providers

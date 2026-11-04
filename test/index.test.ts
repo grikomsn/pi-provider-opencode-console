@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 
 import providerFactory from "../src/index.ts";
 import { resetModelsDevCacheForTests } from "../src/models.ts";
+import { withAgentDir } from "./helpers.ts";
 
 // Capture the registered providers + commands.
 interface CapturedProvider {
@@ -78,7 +79,9 @@ interface CapturedConfig {
 
 test("extension registers the console and go providers", async () => {
 	const pi = makeFakePi();
-	providerFactory(cast(pi));
+	// No persisted catalog yet: both providers register empty and stay that
+	// way until a refresh publishes one.
+	await withAgentDir(undefined, () => providerFactory(cast(pi)));
 	assert.equal(pi.providers.length, 2);
 	assert.equal(pi.providers[0]!.name, "opencode-console");
 	assert.equal(pi.providers[1]!.name, "opencode-go-console");
@@ -99,6 +102,22 @@ test("extension registers the console and go providers", async () => {
 		assert.equal(typeof cfg.refreshModels, "function");
 		assert.equal(typeof cfg.streamSimple, "function");
 	}
+});
+
+test("registration seeds pi's persisted catalog", async () => {
+	const row = {
+		id: "deepseek-v4.1-flash",
+		name: "DeepSeek V4.1 Flash",
+		api: "openai-completions",
+		baseUrl: "https://opencode.ai/inference/go/openai/v1",
+	};
+	const pi = makeFakePi();
+	await withAgentDir({ "opencode-go-console": { models: [row], checkedAt: 1 } }, () => providerFactory(cast(pi)));
+	// Pi resolves its startup model before the first refresh publishes, so the
+	// persisted row has to be registered with the provider.
+	assert.deepEqual((pi.providers[1]!.config as CapturedConfig).models, [row]);
+	// Providers keep their own catalogs.
+	assert.deepEqual((pi.providers[0]!.config as CapturedConfig).models, []);
 });
 
 test("extension registers /opencode-console and /opencode-go-console commands", async () => {
