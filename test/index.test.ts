@@ -283,7 +283,7 @@ test("refreshModels serves and publishes the stored catalog for the cache-only p
 	const refreshModels = provider.config.refreshModels as (ctx: {
 		allowNetwork?: boolean;
 		publish?: (p: { persist: { models: unknown[] } }) => Promise<boolean>;
-		stored?: { models: Array<{ id: string; name: string }> };
+		stored?: { models: Array<{ id: string; name: string; baseUrl: string }> };
 	}) => Promise<Array<{ id: string; name: string }>>;
 	// pi calls refreshModels with allowNetwork === false during startup and in
 	// `-p` mode; the composer treats the return value as the authoritative
@@ -291,8 +291,8 @@ test("refreshModels serves and publishes the stored catalog for the cache-only p
 	// be published so the snapshot converges without a network hop.
 	const stored = {
 		models: [
-			{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
-			{ id: "glm-5.3", name: "GLM 5.3" },
+			{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", baseUrl: "https://opencode.ai/inference/go/openai/v1" },
+			{ id: "glm-5.3", name: "GLM 5.3", baseUrl: "https://opencode.ai/inference/go/openai/v1" },
 		],
 	};
 	const published: { persist: { models: unknown[] } }[] = [];
@@ -312,7 +312,7 @@ test("refreshModels keeps the stored catalog when the network refresh fails", as
 	const provider = pi.providers[0]!;
 	const refreshModels = provider.config.refreshModels as (ctx: {
 		signal?: AbortSignal;
-		stored?: { models: Array<{ id: string; name: string }> };
+		stored?: { models: Array<{ id: string; name: string; baseUrl: string }> };
 	}) => Promise<Array<{ id: string; name: string }>>;
 	const server = createServer((req, res) => {
 		req.on("data", () => {});
@@ -341,7 +341,7 @@ test("refreshModels keeps the stored catalog when the network refresh fails", as
 				},
 			},
 			async () => {
-				const stored = { models: [{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" }] };
+				const stored = { models: [{ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", baseUrl: "https://opencode.ai/inference/go/openai/v1" }] };
 				const models = await refreshModels({ stored });
 				assert.deepEqual(models, stored.models);
 			},
@@ -757,7 +757,7 @@ function getGoRefresh() {
 		signal?: AbortSignal;
 		allowNetwork?: boolean;
 		credential?: unknown;
-		stored?: { models: Array<{ id: string; name: string }> };
+		stored?: { models: Array<{ id: string; name: string; baseUrl: string }> };
 		publish?: (p: { persist: { models: Array<Record<string, unknown>>; checkedAt: number } }) => Promise<boolean>;
 	}) => Promise<Array<{ id: string }>>;
 }
@@ -861,7 +861,7 @@ test("go refreshModels prefers the persisted catalog over the bundled fallback",
 		throw new Error("gateway down");
 	}) as typeof fetch;
 	try {
-		const stored = { models: [{ id: "stored-model", name: "Stored" }] };
+		const stored = { models: [{ id: "stored-model", name: "Stored", baseUrl: "https://opencode.ai/inference/go/openai/v1" }] };
 		const configs = await refreshModels({ stored, publish: rec.publish });
 		assert.deepEqual(configs.map((m) => m.id), ["stored-model"]);
 		assert.equal(rec.published.length, 1);

@@ -55,7 +55,7 @@ import {
 import { streamConsoleWithSession } from "./stream.ts";
 import { EXTENSION_API } from "./endpoint.ts";
 import { registerCommand } from "./commands.ts";
-import { readPersistedProviderModels } from "./store.ts";
+import { readPersistedProviderModels, usablePersistedModels } from "./store.ts";
 
 /** The shared device-flow login used by both provider registrations. */
 async function deviceLogin(
@@ -246,7 +246,9 @@ async function refreshProviderCatalog(
 	// pi's provider composer applies whatever we return as the authoritative
 	// catalog; returning [] would wipe the persisted models. Serve and
 	// re-publish the stored catalog for the cache-only pass.
-	const cached = (stored?.models as unknown as ProviderModelConfig[] | undefined) ?? [];
+	// Filter it the same way as the registration seed: one corrupt row must
+	// not make every publish (and so every refresh) throw.
+	const cached: ProviderModelConfig[] = usablePersistedModels(stored?.models);
 	if (allowNetwork === false) {
 		return publishAndReturn(publish, cached);
 	}
