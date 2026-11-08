@@ -31,6 +31,35 @@ export interface ModelConfigSource {
 	headers?: Record<string, unknown>;
 }
 
+/**
+ * The 2026-11 gateway `/models` rows nest pricing under a modality key
+ * (`cost.text.{input:{price,cache:{read}},output:{price}}`) and move the
+ * accepted reasoning efforts to `capabilities.reasoning.effort`. The flat
+ * shapes stay supported for models.dev snapshots and older payloads.
+ */
+export interface GatewayLiveFields {
+	capabilities?: { reasoning?: { effort?: unknown } };
+}
+
+/**
+ * Flatten a live row's nested `cost.text` pricing into the flat shape the
+ * projection reads. Returns the original object when no nested form exists.
+ */
+export function flattenLiveCost<T extends ModelConfigSource>(source: T): T {
+	const text = asRecord(source.cost && (source.cost as Record<string, unknown>).text);
+	if (!text) return source;
+	const input = asRecord(text.input);
+	const output = asRecord(text.output);
+	const cache = asRecord(input?.cache);
+	const flatCost = {
+		input: input?.price,
+		output: output?.price,
+		cache_read: cache?.read,
+		...(cache?.write !== undefined ? { cache_write: cache.write } : {}),
+	};
+	return { ...source, cost: { ...flatCost, ...(asRecord(source.cost) ?? {}) } } as T;
+}
+
 export interface ProviderSource {
 	name?: unknown;
 	npm?: unknown;
@@ -192,83 +221,131 @@ const SUPPLEMENTAL_MODELS: Readonly<Record<"opencode" | "opencode-go", Readonly<
 			tool_call: true,
 			attachment: true,
 			modalities: { input: ["text", "image", "video"] },
-			cost: { input: 0.6, output: 3, cache_read: 0.08 },
-		},
-		"glm-5.1": {
-			id: "glm-5.1",
-			name: "GLM-5.1",
-			family: "glm",
-			limit: { context: 204_800, output: 131_072 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }],
-			tool_call: true,
-			modalities: { input: ["text"] },
-			cost: { input: 1.4, output: 4.4, cache_read: 0.26 },
-		},
-		"glm-5": {
-			id: "glm-5",
-			name: "GLM-5",
-			family: "glm",
-			limit: { context: 204_800, output: 131_072 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }],
-			tool_call: true,
-			modalities: { input: ["text"] },
-			cost: { input: 1, output: 3.2, cache_read: 0.2 },
-		},
-		"qwen3.5-plus": {
-			id: "qwen3.5-plus",
-			name: "Qwen3.5 Plus",
-			family: "qwen3.5",
-			limit: { context: 262_144, output: 65_536 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }, { type: "budget_tokens", max: 81_920 }],
-			tool_call: true,
-			attachment: true,
-			modalities: { input: ["text", "image", "video"] },
-			provider: { npm: "@ai-sdk/anthropic" },
-			cost: { input: 0.2, output: 1.2, cache_read: 0.02 },
-		},
-		"mimo-v2-pro": {
-			id: "mimo-v2-pro",
-			name: "MiMo-V2-Pro",
-			family: "mimo",
-			limit: { context: 1_048_576, output: 131_072 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }],
-			tool_call: true,
-			modalities: { input: ["text"] },
-		},
-		"mimo-v2-omni": {
-			id: "mimo-v2-omni",
-			name: "MiMo-V2-Omni",
-			family: "mimo",
-			limit: { context: 262_144, output: 131_072 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }],
-			tool_call: true,
-			attachment: true,
-			modalities: { input: ["text", "image", "audio", "video", "pdf"] },
-		},
-		"omen-alpha": {
-			id: "omen-alpha",
-			name: "Omen Alpha",
-			family: "omen",
-			limit: { context: 262_144, output: 65_536 },
-			reasoning: true,
-			reasoning_options: [{ type: "toggle" }],
-			tool_call: true,
-			attachment: true,
-			modalities: { input: ["text", "image"] },
-		},
-	},
+                        cost: { input: 0.6, output: 3, cache_read: 0.1 },
+                },
+                "glm-5.1": {
+                        id: "glm-5.1",
+                        name: "GLM-5.1",
+                        family: "glm",
+                        limit: { context: 204_800, output: 131_072 },
+                        reasoning: true,
+                        // Live-verified 2026-10-09: the Go gateway routes glm-5.1/5.2/5.3 to a
+                        // GLM-5.3 backend that only accepts reasoning_effort low|high|max —
+                        // a thinking toggle or "none" is rejected ("thinking-only model").
+                        reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+                        tool_call: true,
+                        modalities: { input: ["text"] },
+                        cost: { input: 1.4, output: 4.4, cache_read: 0.26 },
+                },
+                "glm-5": {
+                        id: "glm-5",
+                        name: "GLM-5",
+                        family: "glm",
+                        limit: { context: 204_800, output: 131_072 },
+                        reasoning: true,
+                        // Mirrors the live-verified glm-5.1/5.2/5.3 effort set (see above).
+                        reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+                        tool_call: true,
+                        modalities: { input: ["text"] },
+                        cost: { input: 1, output: 3.2, cache_read: 0.2 },
+                },
+                "qwen3.5-plus": {
+                        id: "qwen3.5-plus",
+                        name: "Qwen3.5 Plus",
+                        family: "qwen",
+                        limit: { context: 262_144, output: 65_536 },
+                        reasoning: true,
+                        reasoning_options: [{ type: "toggle" }, { type: "budget_tokens" }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image", "video"] },
+                        provider: { npm: "@ai-sdk/anthropic" },
+                        cost: { input: 0.2, output: 1.2, cache_read: 0.02 },
+                },
+                "mimo-v2-pro": {
+                        id: "mimo-v2-pro",
+                        name: "MiMo-V2-Pro",
+                        family: "mimo",
+                        limit: { context: 1_048_576, output: 131_072 },
+                        reasoning: true,
+                        // Live-verified 2026-10-09 (mimo-v2.5/2.6): accepts reasoning_effort
+                        // none|low|high; medium is rejected upstream.
+                        reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "high"] }],
+                        tool_call: true,
+                        modalities: { input: ["text"] },
+                },
+                "mimo-v2-omni": {
+                        id: "mimo-v2-omni",
+                        name: "MiMo-V2-Omni",
+                        family: "mimo",
+                        limit: { context: 262_144, output: 131_072 },
+                        reasoning: true,
+                        // Mirrors the live-verified mimo effort set (see mimo-v2-pro).
+                        reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "high"] }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image", "audio", "video", "pdf"] },
+                },
+                "omen-alpha": {
+                        id: "omen-alpha",
+                        name: "Omen Alpha",
+                        family: "omen",
+                        limit: { context: 262_144, output: 65_536 },
+                        reasoning: true,
+                        // Live-verified 2026-10-09: accepts low|high|max|none; "default" and
+                        // a thinking object are rejected. Only max emits reasoning tokens
+                        // reliably, so the profile mirrors the accepted effort set.
+                        reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "high", "max"] }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image"] },
+                },
+                // Mirrored from the models.dev `opencode` (Console) canonical entries on
+                // 2026-10-18; served by Go discovery while models.dev lacks the id there.
+                "kimi-k2.6": {
+                        id: "kimi-k2.6",
+                        name: "Kimi K2.6",
+                        family: "kimi-k2",
+                        limit: { context: 262_144, output: 65_536 },
+                        reasoning: true,
+                        reasoning_options: [{ type: "toggle" }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image", "video"] },
+                        cost: { input: 0.95, output: 4, cache_read: 0.16 },
+                },
+                "grok-4.6": {
+                        id: "grok-4.6",
+                        name: "Grok 4.6",
+                        family: "grok",
+                        limit: { context: 500_000, output: 500_000 },
+                        reasoning: true,
+                        reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh"] }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image"] },
+                        provider: { npm: "@ai-sdk/openai" },
+                        cost: { input: 2, output: 6, cache_read: 0.5 },
+                },
+                "qwen3.6-plus": {
+                        id: "qwen3.6-plus",
+                        name: "Qwen3.6 Plus",
+                        family: "qwen",
+                        limit: { context: 262_144, output: 65_536 },
+                        reasoning: true,
+                        reasoning_options: [{ type: "toggle" }, { type: "budget_tokens" }],
+                        tool_call: true,
+                        attachment: true,
+                        modalities: { input: ["text", "image", "video"] },
+                        provider: { npm: "@ai-sdk/anthropic" },
+                        cost: { input: 0.5, output: 3, cache_read: 0.05 },
+                },
+        },
 };
 
-/**
- * Live discovery may serve a legacy alias id alongside the canonical id for
+/** Live discovery may serve a legacy alias id alongside the canonical id for
  * the same model. When both appear in one discovery response the alias is
- * hidden; if only the alias is served it keeps its supplemental metadata.
- */
+ * hidden; if only the alias is served it keeps its supplemental metadata. */
 const ALIAS_MODELS: Readonly<Record<"opencode" | "opencode-go", Readonly<Record<string, string>>>> = {
 	opencode: {},
 	"opencode-go": { "deepseek-flash": "deepseek-v4.1-flash" },
@@ -373,7 +450,9 @@ export async function fetchPublicModelsRows(
 		const id = typeof row?.id === "string" && row.id ? row.id : typeof item === "string" && item ? item : undefined;
 		if (!id) continue;
 		const live: ModelConfigSource = row ?? { id };
-		rows.push({ ...live, id });
+		// 2026-11 gateway rows nest pricing under cost.text; flatten so the
+		// projection (and models.dev field merges) see the flat shape.
+		rows.push({ ...flattenLiveCost(live), id });
 	}
 	return rows;
 }
@@ -411,8 +490,11 @@ export function buildProviderSources(
 	const models: Record<string, ModelConfigSource> = {};
 	for (const row of rows) {
 		const id = row.id as string;
+		// Rows may come from callers that skipped fetchPublicModelsRows
+		// (tests, org-config catalogs); normalize nested live shapes here too.
+		const live = flattenLiveCost(row);
 		const reference = dev?.models?.[id] ?? SUPPLEMENTAL_MODELS[devId][id];
-		models[id] = fillFromModelsDev(row, reference);
+		models[id] = fillFromModelsDev(live, reference);
 	}
 	// Hide a legacy alias id when its canonical id is served alongside it.
 	for (const [alias, canonical] of Object.entries(ALIAS_MODELS[devId])) {
@@ -518,6 +600,20 @@ function deriveThinkingLevelMap(options: unknown): ThinkingLevelMap | undefined 
 	return map;
 }
 
+/**
+ * Translate the 2026-11 gateway live shape (`capabilities.reasoning.effort`:
+ * `["low","high","max"]`) into the `reasoning_options` entries the projection
+ * understands. Returns undefined when the row carries no effort list —
+ * bundled `reasoning_options` and models.dev metadata keep precedence by
+ * being checked first at the call site.
+ */
+function liveReasoningOptions(source: ModelConfigSource): ModelConfigSource["reasoning_options"] {
+	const effort = (source as ModelConfigSource & GatewayLiveFields).capabilities?.reasoning?.effort;
+	if (!Array.isArray(effort)) return undefined;
+	const values = effort.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+	return values.length ? [{ type: "effort", values }] : undefined;
+}
+
 export function buildPiModels(providers: Map<string, ProviderSource>, mode: OpenCodeMode = "console"): BuiltModel[] {
 	// First pass: collect entries and a list of (providerId, rawId) pairs.
 	const entries: BuiltModel[] = [];
@@ -533,6 +629,10 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 			// choices/scores, no text generation): they cannot serve chat and
 			// pi's official config omits them (models.dev: output limit 0).
 			if (/^jev(?:-|$)/i.test(rawId.trim())) continue;
+			// 2026-11 gateway rows list accepted efforts under
+			// capabilities.reasoning.effort when reasoning_options is absent;
+			// translate so the thinking-level map stays live-authoritative.
+			const reasoningOptions = source.reasoning_options ?? liveReasoningOptions(source);
 			const modelId = typeof source.id === "string" ? source.id : rawId;
 			const baseUrl = stringField(asRecord(source.provider), "api") ?? stringField(provider, "api") ?? "";
 			if (!baseUrl) continue; // can't route without a base URL
@@ -552,7 +652,7 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 			const mergedHeaders = providerHeaders || modelHeaders
 				? { ...(providerHeaders ?? {}), ...(modelHeaders ?? {}) }
 				: undefined;
-			const thinkingLevelMap = deriveThinkingLevelMap(source.reasoning_options);
+			const thinkingLevelMap = deriveThinkingLevelMap(reasoningOptions);
 			// Live-verified (2026-10-12): the gateway rejects `thinking:
 			// {type: "disabled"}` for adaptive-thinking Claude models ("use
 			// thinking.type.adaptive and output_config.effort"). Sister parity
@@ -579,6 +679,9 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 						compat: { forceAdaptiveThinking: true },
 					}
 					: {};
+			// Rows supplied directly (org-config catalogs, tests) may carry the
+			// nested 2026-11 cost.text shape; flatten before reading.
+			const costSource = flattenLiveCost(source);
 			entries.push({
 				id: rawId,
 				wireId: rawId,
@@ -593,10 +696,10 @@ export function buildPiModels(providers: Map<string, ProviderSource>, mode: Open
 				...thinking,
 				input: imageCapable(source) ? ["text", "image"] : ["text"],
 				cost: {
-					input: num(source.cost?.input, 0),
-					output: num(source.cost?.output, 0),
-					cacheRead: num(source.cost?.cache_read, 0),
-					cacheWrite: num(source.cost?.cache_write, 0),
+					input: num(costSource.cost?.input, 0),
+					output: num(costSource.cost?.output, 0),
+					cacheRead: num(costSource.cost?.cache_read, 0),
+					cacheWrite: num(costSource.cost?.cache_write, 0),
 				},
 				headers: mergedHeaders,
 			});

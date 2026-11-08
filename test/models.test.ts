@@ -4,6 +4,7 @@ import {
 	buildPiModels,
 	buildProviderSources,
 	fetchPublicModelsRows,
+	flattenLiveCost,
 	GO_FALLBACK_MODELS,
 	loadConsoleConfig,
 	loadPublicModels,
@@ -647,4 +648,47 @@ test("jev (System One) ids are filtered from every catalog source", () => {
 	]]);
 	const models = buildPiModels(providers);
 	assert.deepEqual(models.map((m) => m.id).sort(), ["jevron-9", "qwen3.8-max"]);
+});
+test("2026-11 gateway rows: nested cost.text flattens and capabilities.reasoning.effort maps", () => {
+        // Live Go rows (probed 2026-11-09) nest pricing under cost.text and
+        // list efforts under capabilities.reasoning.effort with no
+        // reasoning_options.
+        const providers = new Map([[
+                "opencode-go",
+                {
+                        api: "https://gateway.example.test/go/v1",
+                        models: {
+                                "kimi-k3.1-pro": {
+                                        id: "kimi-k3.1-pro",
+                                        name: "Kimi K3.1 Pro",
+                                        reasoning: true,
+                                        limit: { context: 1_048_576, output: 131_072 },
+                                        capabilities: { reasoning: { supported: true, effort: ["low", "high", "max"] } },
+                                        cost: { text: { input: { price: 2, cache: { read: 0.2, write: 2 } }, output: { price: 10 } } },
+                                },
+                        },
+                } as unknown as ProviderSource,
+        ]]);
+        const models = buildPiModels(providers, "go");
+        assert.equal(models.length, 1);
+        assert.equal(models[0]!.cost.input, 2);
+        assert.equal(models[0]!.cost.output, 10);
+        assert.equal(models[0]!.cost.cacheRead, 0.2);
+        assert.equal(models[0]!.cost.cacheWrite, 2);
+        // Efforts surface as a thinking-level map instead of falling through.
+        assert.deepEqual(models[0]!.thinkingLevelMap, {
+                minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max",
+        });
+});
+
+test("flattenLiveCost leaves flat and models.dev shapes untouched", () => {
+        const flat = { id: "x", cost: { input: 1, output: 2, cache_read: 0.3 } };
+        assert.equal(flattenLiveCost(flat), flat);
+        // The nested cost.text key only exists on live rows, which arrive as
+        // untyped records; ModelConfigSource.cost keeps the flat shape.
+        const nestedRow = { id: "y", cost: { text: { input: { price: 1 }, output: { price: 4 } } } } as unknown as { id: string; cost?: { input?: unknown; output?: unknown; cache_read?: unknown } };
+        const nested = flattenLiveCost(nestedRow);
+        assert.equal(nested.cost?.input, 1);
+        assert.equal(nested.cost?.output, 4);
+        assert.equal(nested.cost?.cache_read, undefined);
 });
