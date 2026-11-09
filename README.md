@@ -8,6 +8,20 @@
 [![CI](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml/badge.svg)](https://github.com/grikomsn/pi-provider-opencode-console/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> [!WARNING]
+> **Archived.** OpenCode Console now officially supports Pi with its own extension — see the
+> [official integration docs](https://opencode.ai/console/integrations/pi). Install and connect it with:
+>
+> ```sh
+> npx @opencode/console setup pi
+> ```
+>
+> It keeps Pi on the workspace's models and policies and adds the workspace's MCP servers and Library
+> items, with Console enforcing rules on every request. This repository is read-only and no longer
+> maintained; the npm package stays published as-is but will not receive updates. If you relied on the
+> separate OpenCode Go gateway provider (`opencode-go-console`), the official integration covers the
+> Console workspace flow only.
+
 A [Pi](https://github.com/earendil-works/pi-coding-agent) provider for [OpenCode Console](https://opencode.ai/console) that signs in via the OAuth 2.0 device authorization grant and discovers account-specific models from the org-scoped `/api/config` endpoint. Ships two providers mirroring OpenCode's two auth systems: **OpenCode Console** (`opencode-console`) and **OpenCode Go** (`opencode-go-console`) — both sign in exclusively via device-code (OAuth).
 
 > **Breaking change in 2.0:** the `sk-` service-key (API-key) auth method was removed. See [Authenticate](#authenticate) for the migration note.
